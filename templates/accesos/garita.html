@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block titulo %}Garita · SIGECOP{% endblock %}
+{% block nav_ingresos %}activo{% endblock %}
+{% block migas %}Espacio de trabajo <span class="sc-migas__sep">/</span> <strong>Garita</strong>{% endblock %}
+
+{% block contenido %}
+  <p class="sc-etiqueta-seccion">Ingresos</p>
+  <h1>Garita</h1>
+  <p class="sc-subtitulo">Escanea o pega el código del permiso para registrar el acceso.</p>
+
+  {% if ultimo_evento %}
+    <div class="sc-banner">
+      <div class="sc-banner__icono {% if ultimo_evento.tipo == 'DENEGADO' %}sc-icono-denegado{% endif %}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M9 12l2 2 4-4"/></svg>
+      </div>
+      <div>
+        <p class="sc-banner__titulo">{{ ultimo_evento.persona.nombre_completo }}</p>
+        <p class="sc-banner__detalle">
+          {% if ultimo_evento.tipo == "DENEGADO" %}
+            Acceso denegado: {{ ultimo_evento.motivo_denegacion }}
+          {% else %}
+            {{ ultimo_evento.get_tipo_display }} registrada.
+          {% endif %}
+        </p>
+      </div>
+    </div>
+  {% endif %}
+
+  <form method="post" style="max-width:420px;">
+    {% csrf_token %}
+    <div class="sc-campo" style="margin-bottom:12px;"><label>{{ form.codigo.label }}</label>{{ form.codigo }}</div>
+    <div class="sc-campo" style="margin-bottom:12px;"><label>Instalación</label>{{ form.instalacion }}</div>
+    {% for radio in form.tipo %}
+      <label style="display:block; margin-bottom:6px; font-size:13px;">{{ radio.tag }} {{ radio.choice_label }}</label>
+    {% endfor %}
+    <button type="submit" class="sc-boton-primario" style="margin-top:10px;">Registrar</button>
+  </form>
+{% endblock %}

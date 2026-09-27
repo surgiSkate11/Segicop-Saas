@@ -1,0 +1,22 @@
+
+# Ignoramos archivos de migración de Django:
+*.pyc
+*.pyo
+# Ignoramos archivos de base de datos SQLite:
+*.sqlite3
+# Ignoramos archivos de medios:
+media/
+staticfiles/
+# Ignoramos archivos de configuración de entorno virtual:
+env/
+venv/
+/.venv/
+# Ignoramos archivos de configuración de PyCharm:
+.idea/
+# Ignoramos archivos del proyecto
+doc/
+# Ignoramos los roles iniciales 
+apps/identidad/fixtures/roles_iniciales.json
+
+
+

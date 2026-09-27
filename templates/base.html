@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+{% load static %}
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block titulo %}SIGECOP{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+  <meta name="csrf-token" content="{{ csrf_token }}">
+
+  <style>
+    :root {
+      /* Paleta base — tema oscuro */
+      --fondo: #0B1220;
+      --superficie: #121B2E;
+      --superficie-2: #1A2740;
+      --linea: rgba(255,255,255,0.08);
+      --linea-fuerte: rgba(255,255,255,0.14);
+      --tinta: #F3F4F6;
+      --tinta-suave: #8B93A7;
+      --tinta-tenue: #5B6478;
+
+      /* Acentos */
+      --acento: #E8622C;
+      --acento-oscuro: #C94F20;
+      --acento-suave: rgba(232,98,44,0.16);
+      --teal: #14B8A6;
+      --teal-suave: rgba(20,184,166,0.16);
+      --azul: #4C82F7;
+      --azul-suave: rgba(76,130,247,0.16);
+
+      --radio: 14px;
+      --radio-chico: 9px;
+      --sombra: 0 1px 2px rgba(0,0,0,.2), 0 8px 24px rgba(0,0,0,.28);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: "Inter", system-ui, sans-serif;
+      color: var(--tinta); background: var(--fondo);
+      display: flex; min-height: 100vh; font-size: 14px;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; }
+
+    /* ---------- Sidebar ---------- */
+    .sc-sidebar {
+      width: 264px;
+      flex-shrink: 0;
+      padding: 26px 18px;
+      display: flex;
+      flex-direction: column;
+      background: linear-gradient(160deg, #3A1B0E 0%, #B9481D 42%, #E8622C 100%);
+      color: #fff;
+    }
+
+    .sc-marca { display: flex; align-items: center; gap: 12px; padding: 0 6px 22px; }
+    .sc-marca__icono {
+      width: 42px; height: 42px; border-radius: 12px;
+      background: rgba(255,255,255,0.16);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .sc-marca__icono svg { width: 22px; height: 22px; }
+    .sc-marca__nombre { font-size: 17px; font-weight: 800; letter-spacing: -0.01em; line-height: 1.1; }
+    .sc-marca__lema { font-size: 11px; color: rgba(255,255,255,0.75); margin-top: 2px; }
+
+    .sc-espacio-trabajo {
+      display: flex; align-items: center; gap: 10px;
+      background: rgba(255,255,255,0.12);
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: var(--radio-chico);
+      padding: 10px 12px;
+      margin-bottom: 22px;
+    }
+    .sc-espacio-trabajo__icono {
+      width: 32px; height: 32px; border-radius: 9px;
+      background: rgba(255,255,255,0.9); color: var(--acento-oscuro);
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 800; font-size: 12px; flex-shrink: 0;
+    }
+    .sc-espacio-trabajo__titulo { font-size: 12.5px; font-weight: 700; line-height: 1.2; }
+    .sc-espacio-trabajo__sub { font-size: 11px; color: rgba(255,255,255,0.7); }
+    .sc-punto-activo {
+      width: 7px; height: 7px; border-radius: 50%; background: #34D399;
+      margin-left: auto; flex-shrink: 0;
+    }
+
+    .sc-nav-seccion {
+      font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .08em; color: rgba(255,255,255,0.55);
+      margin: 18px 10px 8px;
+    }
+    .sc-nav-seccion:first-of-type { margin-top: 4px; }
+
+    .sc-nav { display: flex; flex-direction: column; gap: 2px; }
+    .sc-nav-item {
+      display: flex; align-items: center; gap: 11px;
+      padding: 10px 12px;
+      border-radius: var(--radio-chico);
+      border-left: 3px solid transparent;
+      text-decoration: none;
+      font-size: 13.5px; font-weight: 600;
+      color: rgba(255,255,255,0.82);
+      transition: background .15s ease, color .15s ease;
+    }
+    .sc-nav-item svg { width: 18px; height: 18px; stroke-width: 1.8; flex-shrink: 0; }
+    .sc-nav-item:hover { background: rgba(0,0,0,0.14); color: #fff; }
+    .sc-nav-item.activo {
+      background: rgba(11,18,32,0.32);
+      border-left-color: #fff;
+      color: #fff;
+    }
+    .sc-nav-item.deshabilitado { color: rgba(255,255,255,0.38); cursor: default; }
+    .sc-nav-item.deshabilitado:hover { background: none; color: rgba(255,255,255,0.38); }
+
+    .sc-sidebar-pie { margin-top: auto; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.16); }
+    .sc-sidebar-pie__estado {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 11.5px; color: rgba(255,255,255,0.75); margin-bottom: 12px;
+    }
+    .sc-sidebar-pie__estado .sc-punto-activo { margin-left: 0; }
+    .sc-perfil-mini { display: flex; align-items: center; gap: 10px; }
+    .sc-perfil-mini__avatar {
+      width: 34px; height: 34px; border-radius: 50%;
+      background: rgba(255,255,255,0.9); color: var(--acento-oscuro);
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 800; font-size: 12.5px; flex-shrink: 0;
+    }
+    .sc-perfil-mini__nombre { font-size: 12.5px; font-weight: 700; line-height: 1.2; }
+    .sc-perfil-mini__rol { font-size: 11px; color: rgba(255,255,255,0.7); }
+
+    /* ---------- Topbar ---------- */
+    .sc-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    .sc-topbar {
+      height: 64px; flex-shrink: 0;
+      display: flex; align-items: center; gap: 16px;
+      padding: 0 32px;
+      border-bottom: 1px solid var(--linea);
+    }
+    .sc-migas { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--tinta-suave); }
+    .sc-migas strong { color: var(--tinta); font-weight: 700; }
+    .sc-migas__sep { color: var(--tinta-tenue); }
+
+    .sc-topbar-derecha { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .sc-buscador {
+      display: flex; align-items: center; gap: 8px;
+      background: var(--superficie); border: 1px solid var(--linea);
+      border-radius: var(--radio-chico); padding: 8px 12px;
+      width: 240px; color: var(--tinta-suave); font-size: 13px;
+    }
+    .sc-buscador svg { width: 15px; height: 15px; flex-shrink: 0; }
+    .sc-icono-boton {
+      width: 34px; height: 34px; border-radius: 9px;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--superficie); border: 1px solid var(--linea);
+      color: var(--tinta-suave); cursor: pointer;
+    }
+    .sc-icono-boton svg { width: 16px; height: 16px; }
+    .sc-icono-boton:hover { color: var(--tinta); border-color: var(--linea-fuerte); }
+
+    /* ---------- Contenido ---------- */
+    .sc-cuerpo { display: flex; flex: 1; min-height: 0; overflow: auto; }
+    .sc-contenido { flex: 1; padding: 36px 40px; min-width: 0; }
+    .sc-contenido h1 {
+      font-size: 26px; font-weight: 800; letter-spacing: -0.02em;
+      color: var(--tinta); margin: 0 0 6px;
+    }
+    .sc-contenido .sc-subtitulo { font-size: 13.5px; color: var(--tinta-suave); margin: 0 0 28px; }
+    .sc-etiqueta-seccion {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .07em; color: var(--acento); margin: 0 0 8px;
+    }
+
+    /* ---------- Panel lateral ---------- */
+    .sc-panel-lateral { width: 300px; flex-shrink: 0; padding: 36px 28px; border-left: 1px solid var(--linea); }
+    .sc-panel-lateral h2 {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--tinta-suave); margin: 0 0 16px;
+    }
+    .sc-tarjeta-pendiente {
+      background: var(--superficie); border: 1px solid var(--linea); border-radius: var(--radio);
+      padding: 14px 16px; margin-bottom: 8px; transition: border-color .15s ease;
+    }
+    .sc-tarjeta-pendiente:hover { border-color: var(--acento); }
+    .sc-tarjeta-pendiente__titulo { font-size: 13px; font-weight: 600; color: var(--tinta); margin: 0 0 3px; }
+    .sc-tarjeta-pendiente__detalle { font-size: 12px; color: var(--tinta-suave); margin: 0; }
+    .sc-tarjeta-pendiente__badge {
+      display: inline-block; margin-top: 6px; font-size: 11px; font-weight: 700; color: var(--acento);
+      background: var(--acento-suave); border-radius: 6px; padding: 2px 7px;
+    }
+
+    /* ---------- Tarjetas de estadística ---------- */
+    .sc-grilla-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 28px; }
+    .sc-tarjeta-stat {
+      background: var(--superficie); border: 1px solid var(--linea);
+      border-top: 3px solid var(--stat-color, var(--acento));
+      border-radius: var(--radio); padding: 18px 20px;
+      display: flex; align-items: flex-start; justify-content: space-between;
+    }
+    .sc-tarjeta-stat__texto { display: flex; flex-direction: column; gap: 8px; }
+    .sc-tarjeta-stat__titulo { font-size: 12.5px; color: var(--tinta-suave); font-weight: 600; }
+    .sc-tarjeta-stat__valor { font-size: 28px; font-weight: 800; color: var(--tinta); letter-spacing: -0.02em; }
+    .sc-tarjeta-stat__icono {
+      width: 34px; height: 34px; border-radius: 9px;
+      background: var(--stat-fondo-icono, var(--acento-suave)); color: var(--stat-color, var(--acento));
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .sc-tarjeta-stat__icono svg { width: 17px; height: 17px; }
+
+    /* ---------- Banner / tarjeta destacada ---------- */
+    .sc-banner {
+      display: flex; align-items: center; gap: 16px;
+      background: var(--superficie); border: 1px solid var(--linea);
+      border-radius: var(--radio); padding: 18px 22px; margin-bottom: 28px;
+    }
+    .sc-banner__icono {
+      width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0;
+      background: var(--teal-suave); color: var(--teal);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .sc-banner__icono svg { width: 20px; height: 20px; }
+    .sc-banner__titulo { font-size: 14px; font-weight: 700; color: var(--tinta); margin: 0 0 2px; }
+    .sc-banner__detalle { font-size: 12.5px; color: var(--tinta-suave); margin: 0; }
+
+    /* ---------- Mensajes ---------- */
+    .mensajes { list-style: none; margin: 0; padding: 16px 40px 0; }
+    .mensaje { display: inline-block; padding: 7px 14px; border-radius: 8px; font-size: 13px; font-weight: 500; }
+    .mensaje--error { background: rgba(239,68,68,0.15); color: #FCA5A5; }
+    .mensaje--success { background: rgba(52,211,153,0.15); color: #6EE7B7; }
+
+    /* ---------- Estado vacío ---------- */
+    .sc-vacio { border: 1px dashed var(--linea-fuerte); border-radius: var(--radio); padding: 28px; background: var(--superficie); }
+    .sc-vacio p { margin: 0 0 6px; font-size: 13px; color: var(--tinta-suave); }
+    .sc-vacio__ayuda { font-size: 13px; }
+
+    /* ---------- Tablas de datos ---------- */
+    .sc-tabla-envoltorio { background: var(--superficie); border: 1px solid var(--linea); border-radius: var(--radio); overflow: hidden; }
+    table.sc-tabla { width: 100%; border-collapse: collapse; }
+    .sc-tabla thead th {
+      text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .04em; color: var(--tinta-suave);
+      padding: 12px 16px; border-bottom: 1px solid var(--linea); background: var(--superficie-2);
+    }
+    .sc-tabla tbody td { padding: 13px 16px; font-size: 13px; border-bottom: 1px solid var(--linea); color: var(--tinta); }
+    .sc-tabla tbody tr:last-child td { border-bottom: none; }
+    .sc-tabla tbody tr:hover { background: var(--superficie-2); }
+    .sc-tabla a { color: var(--acento); text-decoration: none; font-weight: 600; }
+    .sc-tabla a:hover { text-decoration: underline; }
+
+    /* ---------- Estados (chips de color) ---------- */
+    .sc-estado { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px; }
+    .sc-estado--borrador, .sc-estado--incompleto { background: rgba(139,147,167,0.15); color: var(--tinta-suave); }
+    .sc-estado--en_revision, .sc-estado--observado { background: rgba(245,158,11,0.15); color: #FBBF24; }
+    .sc-estado--habilitado, .sc-estado--habilitado_con_condiciones { background: rgba(52,211,153,0.15); color: #6EE7B7; }
+    .sc-estado--suspendido, .sc-estado--vencido, .sc-estado--no_habilitado { background: rgba(239,68,68,0.15); color: #FCA5A5; }
+
+    /* ---------- Botones ---------- */
+    .sc-boton-primario {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--acento); color: #fff; font-weight: 700; font-size: 13px;
+      padding: 9px 16px; border-radius: var(--radio-chico); text-decoration: none; border: none; cursor: pointer;
+      transition: background .15s ease;
+    }
+    .sc-boton-primario:hover { background: var(--acento-oscuro); color: #fff; }
+    .sc-boton-secundario {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--superficie); color: var(--tinta); font-weight: 600; font-size: 13px;
+      padding: 8px 15px; border-radius: var(--radio-chico); text-decoration: none;
+      border: 1px solid var(--linea); cursor: pointer; transition: border-color .15s ease;
+    }
+    .sc-boton-secundario:hover { border-color: var(--teal); color: var(--teal); }
+
+    .sc-cabecera-lista { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+
+    {% block extra_css %}{% endblock %}
+  </style>
+  {% block extra_head %}{% endblock %}
+</head>
+<body hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+
+  <nav class="sc-sidebar">
+    <div class="sc-marca">
+      <div class="sc-marca__icono">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 2 3 6v6c0 5.2 3.8 9.4 9 10 5.2-.6 9-4.8 9-10V6z"/><path d="m9 12 2 2 4-4"/></svg>
+      </div>
+      <div>
+        <div class="sc-marca__nombre">SIGECOP</div>
+        <div class="sc-marca__lema">Gestión y control operativo</div>
+      </div>
+    </div>
+
+    <div class="sc-espacio-trabajo">
+      <div class="sc-espacio-trabajo__icono">{{ organizacion_actual.nombre|default:"SC"|slice:":2"|upper }}</div>
+      <div>
+        <div class="sc-espacio-trabajo__titulo">{{ organizacion_actual.nombre|default:"Sin organización" }}</div>
+        <div class="sc-espacio-trabajo__sub">Espacio de trabajo</div>
+      </div>
+      <span class="sc-punto-activo"></span>
+    </div>
+
+    <div class="sc-nav-seccion">Gestión</div>
+    <div class="sc-nav">
+      <a href="{% url 'identidad:panel' %}" class="sc-nav-item {% block nav_panel %}{% endblock %}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>
+        Panel
+      </a>
+      <a href="{% url 'empresas:lista' %}" class="sc-nav-item {% block nav_empresas %}{% endblock %}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9h10M7 13h10M7 17h6"/></svg>
+        Empresas
+      </a>
+      <a href="{% url 'personas:lista' %}" class="sc-nav-item {% block nav_personas %}{% endblock %}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.5 2.7-6 6-6s6 2.5 6 6"/><circle cx="17" cy="9" r="2.6"/><path d="M15.2 13.2c2.6.4 4.3 2.3 4.8 4.8"/></svg>
+        Personas
+      </a>
+      <a href="#" class="sc-nav-item deshabilitado" title="Próximamente (Fase 5)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M8 3h6l4 4v14H8z"/><path d="M14 3v4h4"/></svg>
+        Documentos
+      </a>
+      <a href="#" class="sc-nav-item deshabilitado" title="Próximamente (Fase 6)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3 4 7v6c0 5 4 7.5 8 8 4-.5 8-3 8-8V7z"/></svg>
+        Antecedentes
+      </a>
+      <a href="#" class="sc-nav-item deshabilitado" title="Próximamente (Fase 7)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="8" r="3"/><path d="M5 21c0-4 3-6 7-6s7 2 7 6"/></svg>
+        Ingresos
+      </a>
+      <a href="#" class="sc-nav-item deshabilitado" title="Próximamente (Fase 8)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2 3 6v6c0 5.2 3.8 9.4 9 10 5.2-.6 9-4.8 9-10V6z"/></svg>
+        Trabajos
+      </a>
+    </div>
+
+    <div class="sc-nav-seccion">Sistema</div>
+    <div class="sc-nav">
+      <a href="{% url 'admin:index' %}" class="sc-nav-item {% block nav_admin %}{% endblock %}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+        Administración
+      </a>
+    </div>
+
+    <div class="sc-sidebar-pie">
+      <div class="sc-sidebar-pie__estado">
+        <span class="sc-punto-activo"></span> Sistema operativo · v.0.1.0
+      </div>
+      {% if request.user.is_authenticated %}
+        <div class="sc-perfil-mini">
+          <div class="sc-perfil-mini__avatar">{{ request.user.nombre_completo|first|upper }}</div>
+          <div>
+            <div class="sc-perfil-mini__nombre">{{ request.user.nombre_completo }}</div>
+            <div class="sc-perfil-mini__rol">{{ rol_actual.nombre|default:"Sin rol asignado" }}</div>
+          </div>
+        </div>
+      {% endif %}
+    </div>
+  </nav>
+
+  <div class="sc-main">
+    <header class="sc-topbar">
+      <div class="sc-migas">
+        {% block migas %}<strong>Panel</strong>{% endblock %}
+      </div>
+      <div class="sc-topbar-derecha">
+        <div class="sc-buscador">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          Buscar en SIGECOP
+        </div>
+        {% block topbar_extra %}{% endblock %}
+        <a href="{% url 'identidad:logout' %}" class="sc-icono-boton" title="Cerrar sesión">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
+        </a>
+      </div>
+    </header>
+
+    {% include "partials/_mensajes.html" %}
+
+    <div class="sc-cuerpo">
+      <main class="sc-contenido">
+        {% block contenido %}{% endblock %}
+      </main>
+      {% block panel_lateral %}{% endblock %}
+    </div>
+  </div>
+
+  {% block extra_js %}{% endblock %}
+</body>
+</html>

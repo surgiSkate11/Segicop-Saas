@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block titulo %}Antecedentes de {{ verificacion.persona.nombre_completo }} · SIGECOP{% endblock %}
+{% block nav_antecedentes %}activo{% endblock %}
+{% block migas %}
+  <a href="{% url 'antecedentes:bandeja' %}">Antecedentes</a> <span class="sc-migas__sep">/</span>
+  <strong>{{ verificacion.persona.nombre_completo }}</strong>
+{% endblock %}
+
+{% block contenido %}
+  <p class="sc-etiqueta-seccion">{{ verificacion.persona.nombre_completo }}</p>
+  <h1>Verificación de antecedentes</h1>
+  <p class="sc-subtitulo">
+    Estado: <span class="sc-estado sc-estado--{{ verificacion.estado|lower }}">{{ verificacion.get_estado_display }}</span>
+    · Modo: {{ verificacion.get_modo_conector_display }}
+  </p>
+
+  {% if verificacion.estado == "CONTINGENCIA_MANUAL" %}
+    <div class="sc-banner">
+      <div class="sc-banner__icono">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 4 7v6c0 5 4 7.5 8 8 4-.5 8-3 8-8V7z"/></svg>
+      </div>
+      <div>
+        <p class="sc-banner__titulo">Cargar resultado</p>
+        <p class="sc-banner__detalle">Registra lo que encontraste al consultar la fuente por fuera del sistema.</p>
+      </div>
+    </div>
+    <form method="post" style="margin-bottom: 32px;">
+      {% csrf_token %}
+      <input type="hidden" name="accion" value="cargar_resultado">
+      {% for radio in form_resultado.resultado %}
+        <label style="display:block; margin-bottom:6px; font-size:13px;">{{ radio.tag }} {{ radio.choice_label }}</label>
+      {% endfor %}
+      <div class="sc-campo" style="margin:12px 0;"><label>{{ form_resultado.numero_certificado.label }}</label>{{ form_resultado.numero_certificado }}</div>
+      <div class="sc-campo" style="margin:12px 0;"><label>{{ form_resultado.proveedor.label }}</label>{{ form_resultado.proveedor }}</div>
+      <div class="sc-campo" style="margin:12px 0;"><label>Comentario</label>{{ form_resultado.comentario }}</div>
+      <button type="submit" class="sc-boton-primario">Guardar resultado</button>
+    </form>
+  {% endif %}
+
+  {% if verificacion.estado == "EN_REVISION_MANUAL" %}
+    <div class="sc-banner">
+      <div class="sc-banner__icono" style="background: var(--teal-suave); color: var(--teal);">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+      </div>
+      <div>
+        <p class="sc-banner__titulo">Validar resultado cargado</p>
+        <p class="sc-banner__detalle">
+          Resultado reportado: <strong>{{ verificacion.get_resultado_display }}</strong>
+          {% if verificacion.numero_certificado %} · Certificado: {{ verificacion.numero_certificado }}{% endif %}
+        </p>
+      </div>
+    </div>
+    <form method="post" style="margin-bottom: 32px;">
+      {% csrf_token %}
+      <input type="hidden" name="accion" value="validar">
+      {% for radio in form_validar.decision %}
+        <label style="display:block; margin-bottom:6px; font-size:13px;">{{ radio.tag }} {{ radio.choice_label }}</label>
+      {% endfor %}
+      <div class="sc-campo" style="margin:12px 0;"><label>{{ form_validar.vigente_hasta.label }}</label>{{ form_validar.vigente_hasta }}</div>
+      <div class="sc-campo" style="margin:12px 0;"><label>Comentario</label>{{ form_validar.comentario }}</div>
+      <button type="submit" class="sc-boton-primario">Registrar decisión</button>
+    </form>
+  {% endif %}
+
+  <p class="sc-etiqueta-seccion">Bitácora</p>
+  {% if ejecuciones %}
+    <div class="sc-tabla-envoltorio">
+      <table class="sc-tabla">
+        <thead><tr><th>Fecha</th><th>Estado resultante</th><th>Detalle</th></tr></thead>
+        <tbody>
+          {% for ejecucion in ejecuciones %}
+            <tr>
+              <td>{{ ejecucion.created_at|date:"d/m/Y H:i" }}</td>
+              <td><span class="sc-estado sc-estado--{{ ejecucion.estado_resultante|lower }}">{{ ejecucion.get_estado_resultante_display }}</span></td>
+              <td>{{ ejecucion.detalle|default:"—" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="sc-vacio"><p>Sin movimientos todavía.</p></div>
+  {% endif %}
+{% endblock %}

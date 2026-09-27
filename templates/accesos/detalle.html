@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block titulo %}Permiso · SIGECOP{% endblock %}
+{% block nav_ingresos %}activo{% endblock %}
+{% block migas %}
+  <a href="{% url 'accesos:lista' %}">Ingresos</a> <span class="sc-migas__sep">/</span>
+  <strong>{{ permiso.persona.nombre_completo }}</strong>
+{% endblock %}
+
+{% block contenido %}
+  <p class="sc-etiqueta-seccion">{{ permiso.instalacion.nombre }}</p>
+  <h1>{{ permiso.persona.nombre_completo }}</h1>
+  <p class="sc-subtitulo">
+    Estado: <span class="sc-estado sc-estado--{{ permiso.estado|lower }}">{{ permiso.get_estado_display }}</span>
+    · Vigencia: {{ permiso.fecha_inicio_vigencia }} – {{ permiso.fecha_fin_vigencia }}
+  </p>
+
+  <div class="sc-banner">
+    <div class="sc-banner__icono">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="3"/><path d="M5 21c0-4 3-6 7-6s7 2 7 6"/></svg>
+    </div>
+    <div>
+      <p class="sc-banner__titulo">Motivo</p>
+      <p class="sc-banner__detalle">{{ permiso.motivo|default:"—" }}</p>
+    </div>
+  </div>
+
+  <p class="sc-etiqueta-seccion">Código</p>
+  <p class="sc-subtitulo" style="font-family: monospace;">{{ permiso.codigo }}</p>
+
+  <p class="sc-etiqueta-seccion">Eventos registrados</p>
+  {% if eventos %}
+    <div class="sc-tabla-envoltorio">
+      <table class="sc-tabla">
+        <thead><tr><th>Fecha</th><th>Tipo</th><th>Motivo</th></tr></thead>
+        <tbody>
+          {% for evento in eventos %}
+            <tr>
+              <td>{{ evento.created_at|date:"d/m/Y H:i" }}</td>
+              <td><span class="sc-estado sc-estado--{{ evento.tipo|lower }}">{{ evento.get_tipo_display }}</span></td>
+              <td>{{ evento.motivo_denegacion|default:"—" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="sc-vacio"><p>Sin eventos todavía.</p></div>
+  {% endif %}
+{% endblock %}

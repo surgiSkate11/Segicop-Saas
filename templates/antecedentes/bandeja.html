@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block titulo %}Antecedentes · SIGECOP{% endblock %}
+{% block nav_antecedentes %}activo{% endblock %}
+{% block migas %}Espacio de trabajo <span class="sc-migas__sep">/</span> <strong>Antecedentes</strong>{% endblock %}
+
+{% block contenido %}
+  <p class="sc-etiqueta-seccion">Antecedentes</p>
+  <h1>Verificaciones pendientes</h1>
+  <p class="sc-subtitulo">Casos esperando carga de resultado o validación humana.</p>
+
+  {% if verificaciones %}
+    <div class="sc-tabla-envoltorio">
+      <table class="sc-tabla">
+        <thead><tr><th>Persona</th><th>Estado</th><th>Modo</th><th></th></tr></thead>
+        <tbody>
+          {% for verificacion in verificaciones %}
+            <tr>
+              <td>{{ verificacion.persona.nombre_completo }}</td>
+              <td><span class="sc-estado sc-estado--{{ verificacion.estado|lower }}">{{ verificacion.get_estado_display }}</span></td>
+              <td>{{ verificacion.get_modo_conector_display }}</td>
+              <td><a href="{% url 'antecedentes:detalle' verificacion.pk %}">Abrir →</a></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="sc-vacio">
+      <p>No hay verificaciones pendientes en este momento.</p>
+      <p class="sc-vacio__ayuda">Se inician desde la ficha de cada persona, en el listado de Personas.</p>
+    </div>
+  {% endif %}
+{% endblock %}

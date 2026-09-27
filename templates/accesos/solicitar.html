@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block titulo %}Solicitar permiso · SIGECOP{% endblock %}
+{% block nav_ingresos %}activo{% endblock %}
+{% block migas %}Espacio de trabajo <span class="sc-migas__sep">/</span> <strong>Ingresos</strong>{% endblock %}
+
+{% block contenido %}
+  <p class="sc-etiqueta-seccion">{{ persona.nombre_completo }}</p>
+  <h1>Solicitar permiso de ingreso</h1>
+  <p class="sc-subtitulo">El sistema calcula automáticamente si corresponde aprobar o rechazar.</p>
+
+  <form method="post" style="max-width:420px;">
+    {% csrf_token %}
+    <div class="sc-campo" style="margin-bottom:12px;"><label>Instalación</label>{{ form.instalacion }}</div>
+    <div class="sc-campo" style="margin-bottom:12px;"><label>Vigente desde</label>{{ form.fecha_inicio_vigencia }}</div>
+    <div class="sc-campo" style="margin-bottom:16px;"><label>Vigente hasta</label>{{ form.fecha_fin_vigencia }}</div>
+    <button type="submit" class="sc-boton-primario">Solicitar</button>
+  </form>
+{% endblock %}

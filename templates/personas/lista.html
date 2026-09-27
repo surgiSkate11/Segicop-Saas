@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block titulo %}Personas · SIGECOP{% endblock %}
+{% block migas %}Espacio de trabajo <span class="sc-migas__sep">/</span> <strong>Personas</strong>{% endblock %}
+{% block nav_personas %}activo{% endblock %}
+
+{% block contenido %}
+  <div class="sc-cabecera-lista">
+    <div>
+      <p class="sc-etiqueta-seccion">Personas</p>
+      <h1>Personas</h1>
+      <p class="sc-subtitulo" style="margin:0;">{{ personas|length }} persona(s) registrada(s).</p>
+    </div>
+    <a href="{% url 'admin:personas_persona_add' %}" class="sc-boton-primario">+ Nueva persona</a>
+  </div>
+
+  {% if personas %}
+    <div class="sc-tabla-envoltorio">
+      <table class="sc-tabla">
+        <thead><tr><th>Nombre</th><th>Documento</th><th>Estado</th><th>Empresa(s)</th></tr></thead>
+        <tbody>
+          {% for persona in personas %}
+            <tr>
+              <td><a href="{% url 'admin:personas_persona_change' persona.pk %}">{{ persona.nombre_completo }}</a></td>
+              <td>{{ persona.get_tipo_documento_display }} {{ persona.numero_documento }}</td>
+              <td><span class="sc-estado sc-estado--{{ persona.estado|lower }}">{{ persona.get_estado_display }}</span></td>
+              <td>
+                {% for asignacion in persona.asignaciones.all %}
+                  {{ asignacion.empresa.razon_social }}{% if not forloop.last %}, {% endif %}
+                {% empty %}<span class="sc-subtitulo" style="margin:0;">Sin asignar</span>{% endfor %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="sc-vacio">
+      <p>Todavía no hay personas registradas en tu organización.</p>
+      <p class="sc-vacio__ayuda">Usa "Nueva persona" para dar de alta la primera.</p>
+    </div>
+  {% endif %}
+{% endblock %}

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ingresar · SIGECOP</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --fondo: #0B1220; --superficie: #121B2E; --linea: rgba(255,255,255,0.1);
+      --tinta: #F3F4F6; --tinta-suave: #8B93A7;
+      --acento: #E8622C; --acento-oscuro: #C94F20;
+      --radio: 16px; --sombra: 0 20px 60px rgba(0,0,0,.45);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      font-family: "Inter", system-ui, sans-serif;
+      background: radial-gradient(600px circle at 15% 15%, rgba(232,98,44,0.14), transparent 60%), var(--fondo);
+      color: var(--tinta);
+    }
+    .sc-login {
+      width: 380px; background: var(--superficie); border: 1px solid var(--linea);
+      border-radius: var(--radio); box-shadow: var(--sombra); padding: 40px 36px;
+    }
+    .sc-login__logo {
+      width: 46px; height: 46px; border-radius: 12px;
+      background: linear-gradient(160deg, #C94F20, #E8622C);
+      display: flex; align-items: center; justify-content: center; margin: 0 auto 20px;
+    }
+    .sc-login__logo svg { width: 24px; height: 24px; }
+    .sc-login h1 { text-align: center; font-size: 18px; font-weight: 800; letter-spacing: -0.01em; margin: 0 0 4px; }
+    .sc-login p.sc-subtitulo { text-align: center; font-size: 13px; color: var(--tinta-suave); margin: 0 0 28px; }
+    .sc-campo { margin-bottom: 16px; }
+    .sc-campo label { display: block; font-size: 12px; font-weight: 600; color: var(--tinta-suave); margin-bottom: 6px; }
+    .sc-input {
+      width: 100%; padding: 10px 12px; border: 1px solid var(--linea); border-radius: 9px;
+      font-size: 14px; font-family: inherit; background: rgba(255,255,255,0.04); color: var(--tinta);
+      transition: border-color .15s ease, background .15s ease;
+    }
+    .sc-input:focus { outline: none; border-color: var(--acento); background: rgba(255,255,255,0.07); }
+    .sc-boton {
+      width: 100%; padding: 11px; border: none; border-radius: 9px; background: var(--acento);
+      color: #fff; font-size: 14px; font-weight: 700; font-family: inherit; cursor: pointer;
+      margin-top: 6px; transition: background .15s ease;
+    }
+    .sc-boton:hover { background: var(--acento-oscuro); }
+    .sc-errores {
+      list-style: none; margin: 0 0 16px; padding: 10px 12px;
+      background: rgba(239,68,68,0.12); color: #FCA5A5; border-radius: 8px; font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="sc-login">
+    <div class="sc-login__logo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 2 3 6v6c0 5.2 3.8 9.4 9 10 5.2-.6 9-4.8 9-10V6z"/><path d="m9 12 2 2 4-4"/></svg>
+    </div>
+    <h1>SIGECOP</h1>
+    <p class="sc-subtitulo">Gestión de contratistas y permisos</p>
+
+    {% if form.non_field_errors %}
+      <ul class="sc-errores">{% for error in form.non_field_errors %}<li>{{ error }}</li>{% endfor %}</ul>
+    {% endif %}
+
+    <form method="post">
+      {% csrf_token %}
+      <div class="sc-campo"><label for="{{ form.username.id_for_label }}">Correo electrónico</label>{{ form.username }}</div>
+      <div class="sc-campo"><label for="{{ form.password.id_for_label }}">Contraseña</label>{{ form.password }}</div>
+      <button type="submit" class="sc-boton">Ingresar</button>
+    </form>
+  </div>
+</body>
+</html>

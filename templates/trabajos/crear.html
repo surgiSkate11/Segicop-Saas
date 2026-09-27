@@ -1,0 +1,21 @@
+{# crear.html #}
+{% extends "base.html" %}
+{% block titulo %}Nuevo permiso de trabajo · SIGECOP{% endblock %}
+{% block nav_trabajos %}activo{% endblock %}
+{% block migas %}Espacio de trabajo <span class="sc-migas__sep">/</span> <strong>Trabajos</strong>{% endblock %}
+{% block contenido %}
+  <p class="sc-etiqueta-seccion">{{ empresa.razon_social }}</p>
+  <h1>Nuevo permiso de trabajo</h1>
+  <p class="sc-subtitulo">Se evalúa automáticamente la habilitación de cada integrante antes de aceptar la solicitud.</p>
+  <form method="post" style="max-width:480px;">
+    {% csrf_token %}
+    <div class="sc-campo" style="margin-bottom:12px;"><label>Instalación</label>{{ form.instalacion }}</div>
+    <div class="sc-campo" style="margin-bottom:12px;"><label>Actividad</label>{{ form.actividad }}</div>
+    <div class="sc-campo" style="margin-bottom:12px;"><label>Nivel de riesgo</label>{{ form.nivel_riesgo }}</div>
+    <div class="sc-campo" style="margin-bottom:12px;"><label>Integrantes de la cuadrilla</label>{{ form.integrantes }}</div>
+    <div class="sc-campo" style="margin-bottom:12px;"><label>Responsable de cuadrilla</label>{{ form.responsable_cuadrilla }}</div>
+    <div class="sc-campo" style="margin-bottom:12px;"><label>Inicio programado</label>{{ form.fecha_inicio_programada }}</div>
+    <div class="sc-campo" style="margin-bottom:16px;"><label>Fin programado</label>{{ form.fecha_fin_programada }}</div>
+    <button type="submit" class="sc-boton-primario">Crear permiso</button>
+  </form>
+{% endblock %}

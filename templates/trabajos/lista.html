@@ -1,0 +1,31 @@
+{# lista.html #}
+{% extends "base.html" %}
+{% block titulo %}Permisos de trabajo · SIGECOP{% endblock %}
+{% block nav_trabajos %}activo{% endblock %}
+{% block migas %}Espacio de trabajo <span class="sc-migas__sep">/</span> <strong>Trabajos</strong>{% endblock %}
+{% block contenido %}
+  <p class="sc-etiqueta-seccion">Trabajos</p>
+  <h1>Permisos de trabajo</h1>
+  <p class="sc-subtitulo">{{ permisos|length }} permiso(s).</p>
+  {% if permisos %}
+    <div class="sc-tabla-envoltorio">
+      <table class="sc-tabla">
+        <thead><tr><th>Actividad</th><th>Empresa</th><th>Instalación</th><th>Riesgo</th><th>Estado</th><th></th></tr></thead>
+        <tbody>
+          {% for permiso in permisos %}
+            <tr>
+              <td>{{ permiso.actividad|truncatechars:40 }}</td>
+              <td>{{ permiso.empresa.razon_social }}</td>
+              <td>{{ permiso.instalacion.nombre }}</td>
+              <td>{{ permiso.get_nivel_riesgo_display }}</td>
+              <td><span class="sc-estado sc-estado--{{ permiso.estado|lower }}">{{ permiso.get_estado_display }}</span></td>
+              <td><a href="{% url 'trabajos:detalle' permiso.pk %}">Ver →</a></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="sc-vacio"><p>Todavía no hay permisos de trabajo.</p><p class="sc-vacio__ayuda">Se crean desde la ficha de cada empresa, en el listado de Empresas.</p></div>
+  {% endif %}
+{% endblock %}

@@ -1,0 +1,46 @@
+{# detalle.html #}
+{% extends "base.html" %}
+{% block titulo %}Permiso de trabajo · SIGECOP{% endblock %}
+{% block nav_trabajos %}activo{% endblock %}
+{% block migas %}<a href="{% url 'trabajos:lista' %}">Trabajos</a> <span class="sc-migas__sep">/</span> <strong>{{ permiso.empresa.razon_social }}</strong>{% endblock %}
+{% block contenido %}
+  <p class="sc-etiqueta-seccion">{{ permiso.empresa.razon_social }} · {{ permiso.instalacion.nombre }}</p>
+  <h1>{{ permiso.actividad|truncatechars:60 }}</h1>
+  <p class="sc-subtitulo">
+    Estado: <span class="sc-estado sc-estado--{{ permiso.estado|lower }}">{{ permiso.get_estado_display }}</span>
+    · Riesgo: {{ permiso.get_nivel_riesgo_display }} · Programado: {{ permiso.fecha_inicio_programada }} – {{ permiso.fecha_fin_programada }}
+  </p>
+  <div class="sc-banner">
+    <div class="sc-banner__icono"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 3 6v6c0 5.2 3.8 9.4 9 10 5.2-.6 9-4.8 9-10V6z"/></svg></div>
+    <div><p class="sc-banner__titulo">Motivo / última evaluación</p><p class="sc-banner__detalle">{{ permiso.motivo|default:"—" }}</p></div>
+  </div>
+  <p class="sc-etiqueta-seccion">Cuadrilla</p>
+  <div class="sc-tabla-envoltorio" style="margin-bottom: 28px;">
+    <table class="sc-tabla">
+      <thead><tr><th>Persona</th><th>Rol</th></tr></thead>
+      <tbody>
+        {% for integrante in permiso.integrantes.all %}
+          <tr><td>{{ integrante.nombre_completo }}</td><td>{% if integrante == permiso.responsable_cuadrilla %}Responsable de cuadrilla{% else %}Integrante{% endif %}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="sc-etiqueta-seccion">Acciones</p>
+  {% if permiso.estado == "SOLICITADO" %}
+    <form method="post">{% csrf_token %}<input type="hidden" name="accion" value="abrir"><button type="submit" class="sc-boton-primario">Abrir permiso</button></form>
+  {% elif permiso.estado == "ACTIVO" %}
+    <form method="post" style="margin-bottom:16px; max-width:420px;">{% csrf_token %}<input type="hidden" name="accion" value="suspender">
+      <div class="sc-campo" style="margin-bottom:10px;"><label>Motivo de suspensión</label><textarea name="motivo" class="sc-input" rows="2" required></textarea></div>
+      <button type="submit" class="sc-boton-secundario">Suspender</button></form>
+    <form method="post" style="max-width:420px;">{% csrf_token %}<input type="hidden" name="accion" value="cerrar">
+      <div class="sc-campo" style="margin-bottom:10px;"><label>Motivo de cierre</label><textarea name="motivo" class="sc-input" rows="2" required></textarea></div>
+      <button type="submit" class="sc-boton-primario">Cerrar permiso</button></form>
+  {% elif permiso.estado == "SUSPENDIDO" %}
+    <form method="post" style="margin-bottom:16px;">{% csrf_token %}<input type="hidden" name="accion" value="reanudar"><button type="submit" class="sc-boton-primario">Reanudar</button></form>
+    <form method="post" style="max-width:420px;">{% csrf_token %}<input type="hidden" name="accion" value="cerrar">
+      <div class="sc-campo" style="margin-bottom:10px;"><label>Motivo de cierre</label><textarea name="motivo" class="sc-input" rows="2" required></textarea></div>
+      <button type="submit" class="sc-boton-secundario">Cerrar permiso</button></form>
+  {% else %}
+    <div class="sc-vacio"><p>Este permiso está en un estado final ({{ permiso.get_estado_display }}), no admite más acciones.</p></div>
+  {% endif %}
+{% endblock %}

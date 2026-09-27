@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block titulo %}Permisos de ingreso · SIGECOP{% endblock %}
+{% block nav_ingresos %}activo{% endblock %}
+{% block migas %}Espacio de trabajo <span class="sc-migas__sep">/</span> <strong>Ingresos</strong>{% endblock %}
+
+{% block contenido %}
+  <div class="sc-cabecera-lista">
+    <div>
+      <p class="sc-etiqueta-seccion">Ingresos</p>
+      <h1>Permisos de ingreso</h1>
+      <p class="sc-subtitulo" style="margin:0;">{{ permisos|length }} permiso(s).</p>
+    </div>
+    <a href="{% url 'accesos:garita' %}" class="sc-boton-primario">Ir a garita</a>
+  </div>
+
+  {% if permisos %}
+    <div class="sc-tabla-envoltorio">
+      <table class="sc-tabla">
+        <thead><tr><th>Persona</th><th>Instalación</th><th>Estado</th><th>Vigencia</th><th></th></tr></thead>
+        <tbody>
+          {% for permiso in permisos %}
+            <tr>
+              <td>{{ permiso.persona.nombre_completo }}</td>
+              <td>{{ permiso.instalacion.nombre }}</td>
+              <td><span class="sc-estado sc-estado--{{ permiso.estado|lower }}">{{ permiso.get_estado_display }}</span></td>
+              <td>{{ permiso.fecha_inicio_vigencia }} – {{ permiso.fecha_fin_vigencia }}</td>
+              <td><a href="{% url 'accesos:detalle' permiso.pk %}">Ver →</a></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="sc-vacio"><p>Todavía no hay permisos solicitados.</p></div>
+  {% endif %}
+{% endblock %}

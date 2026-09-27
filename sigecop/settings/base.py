@@ -1,0 +1,116 @@
+"""
+Settings compartidos por dev/prod. Nada de secretos hardcodeados salvo
+un fallback de desarrollo: en producción se sobreescriben por variable
+de entorno (django-environ).
+"""
+
+from pathlib import Path
+
+import environ
+
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+
+env = environ.Env()
+environ.Env.read_env(BASE_DIR / ".env")  # no-op si el archivo no existe
+
+SECRET_KEY = env(
+    "DJANGO_SECRET_KEY",
+    default="django-insecure-(*ym#pqbynvdybpmz+j2v@84o5!#wci2#78aygm03r)8hry9*5",
+)
+
+INSTALLED_APPS = [
+    "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",
+    # Terceros
+    "rest_framework",
+    "drf_spectacular",
+    "django_htmx",
+    # Apps propias
+    "apps.core",
+    "apps.identidad",
+    "apps.empresas",
+    "apps.personas",
+    "apps.cumplimiento",
+    "apps.antecedentes",
+    "apps.accesos",
+    "apps.trabajos",
+    
+]
+
+MIDDLEWARE = [
+    "django.middleware.security.SecurityMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+    "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "django_htmx.middleware.HtmxMiddleware",
+]
+
+ROOT_URLCONF = "sigecop.urls"
+
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [BASE_DIR / "templates"],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.debug",
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
+                "apps.identidad.context_processors.organizacion_actual",
+            ],
+        },
+    },
+]
+
+WSGI_APPLICATION = "sigecop.wsgi.application"
+ASGI_APPLICATION = "sigecop.asgi.application"
+
+AUTH_USER_MODEL = "identidad.Usuario"
+
+AUTH_PASSWORD_VALIDATORS = [
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
+
+LANGUAGE_CODE = "es"
+TIME_ZONE = "America/Guayaquil"
+USE_I18N = True
+USE_TZ = True
+
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+REST_FRAMEWORK = {
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.SessionAuthentication"],
+    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.LimitOffsetPagination",
+    "PAGE_SIZE": 25,
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "SIGECOP API",
+    "DESCRIPTION": "Sistema Integral de Gestión de Contratistas y Permisos",
+    "VERSION": "0.1.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+}
+
+LOGIN_URL = "identidad:login"
+LOGIN_REDIRECT_URL = "/"
+LOGOUT_REDIRECT_URL = "identidad:login"
+
+STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+
+MEDIA_URL = "media/"       
+MEDIA_ROOT = BASE_DIR / "media"  

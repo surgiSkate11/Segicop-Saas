@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block titulo %}Bandeja de revisión · SIGECOP{% endblock %}
+{% block nav_documentos %}activo{% endblock %}
+{% block migas %}Espacio de trabajo <span class="sc-migas__sep">/</span> <strong>Documentos</strong>{% endblock %}
+
+{% block contenido %}
+  <p class="sc-etiqueta-seccion">Documentos</p>
+  <h1>Bandeja de revisión</h1>
+  <p class="sc-subtitulo">Requisitos con una versión de documento esperando decisión.</p>
+
+  {% if requisitos %}
+    <div class="sc-tabla-envoltorio">
+      <table class="sc-tabla">
+        <thead><tr><th>Requisito</th><th>Empresa / Persona</th><th>Estado</th><th></th></tr></thead>
+        <tbody>
+          {% for requisito in requisitos %}
+            <tr>
+              <td>{{ requisito.catalogo.nombre }}</td>
+              <td>{{ requisito.empresa|default:requisito.persona }}</td>
+              <td><span class="sc-estado sc-estado--{{ requisito.estado|lower }}">{{ requisito.get_estado_display }}</span></td>
+              <td><a href="{% url 'cumplimiento:detalle' requisito.pk %}">Revisar →</a></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="sc-vacio">
+      <p>No hay nada pendiente de revisión en este momento.</p>
+      <p class="sc-vacio__ayuda">Los requisitos aparecen aquí en cuanto alguien sube un documento.</p>
+    </div>
+  {% endif %}
+{% endblock %}

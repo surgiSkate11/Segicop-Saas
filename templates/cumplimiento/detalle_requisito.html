@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block titulo %}{{ requisito.catalogo.nombre }} · SIGECOP{% endblock %}
+{% block nav_documentos %}activo{% endblock %}
+{% block migas %}
+  <a href="{% url 'cumplimiento:bandeja' %}">Documentos</a> <span class="sc-migas__sep">/</span>
+  <strong>{{ requisito.catalogo.nombre }}</strong>
+{% endblock %}
+
+{% block contenido %}
+  <p class="sc-etiqueta-seccion">{{ requisito.empresa|default:requisito.persona }}</p>
+  <h1>{{ requisito.catalogo.nombre }}</h1>
+  <p class="sc-subtitulo">
+    Estado actual: <span class="sc-estado sc-estado--{{ requisito.estado|lower }}">{{ requisito.get_estado_display }}</span>
+  </p>
+
+  <div class="sc-banner">
+    <div class="sc-banner__icono">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3h6l4 4v14H8z"/><path d="M14 3v4h4"/></svg>
+    </div>
+    <div>
+      <p class="sc-banner__titulo">Subir nueva versión</p>
+      <p class="sc-banner__detalle">Cada archivo queda identificado por su hash y no puede editarse una vez subido.</p>
+    </div>
+  </div>
+
+  <form method="post" enctype="multipart/form-data" style="margin-bottom: 32px;">
+    {% csrf_token %}
+    <input type="hidden" name="accion" value="subir">
+    <div class="sc-campo" style="margin-bottom:12px;"><label>{{ form_subida.archivo.label }}</label>{{ form_subida.archivo }}</div>
+    <div class="sc-campo" style="margin-bottom:12px;"><label>{{ form_subida.fecha_vencimiento.label }}</label>{{ form_subida.fecha_vencimiento }}</div>
+    <button type="submit" class="sc-boton-primario">Subir documento</button>
+  </form>
+
+  {% if documento_vigente and requisito.estado == "EN_REVISION" %}
+    <p class="sc-etiqueta-seccion">Decisión</p>
+    <form method="post" style="margin-bottom: 32px;">
+      {% csrf_token %}
+      <input type="hidden" name="accion" value="revisar">
+      {% for radio in form_revision.decision %}
+        <label style="display:block; margin-bottom:6px; font-size:13px;">{{ radio.tag }} {{ radio.choice_label }}</label>
+      {% endfor %}
+      <div class="sc-campo" style="margin: 10px 0;"><label>{{ form_revision.comentario.label }}</label>{{ form_revision.comentario }}</div>
+      <button type="submit" class="sc-boton-primario">Registrar decisión</button>
+    </form>
+  {% endif %}
+
+  <p class="sc-etiqueta-seccion">Historial de versiones</p>
+  {% if documentos %}
+    <div class="sc-tabla-envoltorio">
+      <table class="sc-tabla">
+        <thead><tr><th>Versión</th><th>Subido por</th><th>Vigente</th><th>Última decisión</th></tr></thead>
+        <tbody>
+          {% for documento in documentos %}
+            <tr>
+              <td><a href="{{ documento.archivo.url }}" target="_blank">v{{ documento.version }}</a></td>
+              <td>{{ documento.subido_por.nombre_completo }}</td>
+              <td>{{ documento.vigente|yesno:"Sí,No" }}</td>
+              <td>
+                {% with ultima=documento.revisiones.last %}
+                  {% if ultima %}<span class="sc-estado sc-estado--{{ ultima.decision|lower }}">{{ ultima.get_decision_display }}</span>
+                  {% else %}<span class="sc-subtitulo" style="margin:0;">Sin revisar</span>{% endif %}
+                {% endwith %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="sc-vacio"><p>Todavía no se ha subido ningún documento para este requisito.</p></div>
+  {% endif %}
+{% endblock %}

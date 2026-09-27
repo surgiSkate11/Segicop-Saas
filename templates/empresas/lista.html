@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block titulo %}Empresas · SIGECOP{% endblock %}
+{% block migas %}Espacio de trabajo <span class="sc-migas__sep">/</span> <strong>Empresas</strong>{% endblock %}
+{% block nav_empresas %}activo{% endblock %}
+
+{% block contenido %}
+  <div class="sc-cabecera-lista">
+    <div>
+      <p class="sc-etiqueta-seccion">Empresas</p>
+      <h1>Empresas contratistas</h1>
+      <p class="sc-subtitulo" style="margin:0;">{{ empresas|length }} empresa(s) registrada(s).</p>
+    </div>
+    <a href="{% url 'admin:empresas_empresacontratista_add' %}" class="sc-boton-primario">
+      + Nueva empresa
+    </a>
+  </div>
+
+  {% if empresas %}
+    <div class="sc-tabla-envoltorio">
+      <table class="sc-tabla">
+        <thead>
+          <tr><th>Razón social</th><th>RUC</th><th>Estado</th><th>Contratos</th></tr>
+        </thead>
+        <tbody>
+          {% for empresa in empresas %}
+            <tr>
+              <td>
+                <a href="{% url 'admin:empresas_empresacontratista_change' empresa.pk %}">{{ empresa.razon_social }}</a>
+              </td>
+              <td>{{ empresa.ruc }}</td>
+              <td>
+                <span class="sc-estado sc-estado--{{ empresa.estado|lower }}">{{ empresa.get_estado_display }}</span>
+              </td>
+              <td>{{ empresa.contratos.count }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="sc-vacio">
+      <p>Todavía no hay empresas registradas en tu organización.</p>
+      <p class="sc-vacio__ayuda">Usa "Nueva empresa" para dar de alta la primera.</p>
+    </div>
+  {% endif %}
+{% endblock %}
