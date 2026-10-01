@@ -21,7 +21,10 @@ TRANSICIONES: dict[str, set[str]] = {
 def _evaluar_cuadrilla(permiso):
     """Reutiliza apps.accesos.services.calcular_habilitacion — misma regla RN-007, sin duplicar."""
     if permiso.empresa.estado not in _ESTADOS_HABILITANTES:
-        return False, f"La empresa '{permiso.empresa.razon_social}' está en estado {permiso.empresa.get_estado_display()}."
+        return (
+            False,
+            f"La empresa '{permiso.empresa.razon_social}' está en estado {permiso.empresa.get_estado_display()}.",
+        )
     for persona in permiso.integrantes.all():
         resultado = calcular_habilitacion(persona)
         if not resultado.habilitado:
@@ -37,20 +40,45 @@ def _transicionar(*, permiso, nuevo_estado, actor, motivo=""):
     if motivo:
         permiso.motivo = motivo
     permiso.save()
-    emitir_evento(actor=actor, accion="TRANSICION_PERMISO_TRABAJO", recurso=permiso, organizacion=permiso.organizacion, motivo=f"-> {nuevo_estado}. {motivo}".strip())
+    emitir_evento(
+        actor=actor,
+        accion="TRANSICION_PERMISO_TRABAJO",
+        recurso=permiso,
+        organizacion=permiso.organizacion,
+        motivo=f"-> {nuevo_estado}. {motivo}".strip(),
+    )
 
 
 @transaction.atomic
-def crear_permiso_trabajo(*, empresa, instalacion, actividad, nivel_riesgo, integrantes, actor, fecha_inicio_programada, fecha_fin_programada, contrato=None, responsable_cuadrilla=None):
+def crear_permiso_trabajo(
+    *,
+    empresa,
+    instalacion,
+    actividad,
+    nivel_riesgo,
+    integrantes,
+    actor,
+    fecha_inicio_programada,
+    fecha_fin_programada,
+    contrato=None,
+    responsable_cuadrilla=None,
+):
     if fecha_fin_programada <= fecha_inicio_programada:
         raise DomainError("La fecha de fin programada debe ser posterior a la de inicio.")
     if not integrantes:
         raise DomainError("Un permiso de trabajo requiere al menos un integrante.")
 
     permiso = PermisoTrabajo.objects.create(
-        organizacion=empresa.organizacion, empresa=empresa, contrato=contrato, instalacion=instalacion,
-        actividad=actividad, nivel_riesgo=nivel_riesgo, responsable_cuadrilla=responsable_cuadrilla,
-        estado=EstadoTrabajo.SOLICITADO, fecha_inicio_programada=fecha_inicio_programada, fecha_fin_programada=fecha_fin_programada,
+        organizacion=empresa.organizacion,
+        empresa=empresa,
+        contrato=contrato,
+        instalacion=instalacion,
+        actividad=actividad,
+        nivel_riesgo=nivel_riesgo,
+        responsable_cuadrilla=responsable_cuadrilla,
+        estado=EstadoTrabajo.SOLICITADO,
+        fecha_inicio_programada=fecha_inicio_programada,
+        fecha_fin_programada=fecha_fin_programada,
     )
     permiso.integrantes.set(integrantes)
 
@@ -60,7 +88,9 @@ def crear_permiso_trabajo(*, empresa, instalacion, actividad, nivel_riesgo, inte
         permiso.motivo = motivo
         permiso.save(update_fields=["estado", "motivo", "updated_at"])
 
-    emitir_evento(actor=actor, accion="CREAR_PERMISO_TRABAJO", recurso=permiso, organizacion=empresa.organizacion, motivo=motivo)
+    emitir_evento(
+        actor=actor, accion="CREAR_PERMISO_TRABAJO", recurso=permiso, organizacion=empresa.organizacion, motivo=motivo
+    )
     return permiso
 
 

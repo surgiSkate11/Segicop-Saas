@@ -30,8 +30,8 @@
     </div>
     <div class="sc-tarjeta-stat" style="--stat-color: var(--azul); --stat-fondo-icono: var(--azul-suave);">
       <div class="sc-tarjeta-stat__texto">
-        <span class="sc-tarjeta-stat__titulo">Documentos por aprobar</span>
-        <span class="sc-tarjeta-stat__valor">—</span>
+        <span class="sc-tarjeta-stat__titulo">Alertas pendientes</span>
+        <span class="sc-tarjeta-stat__valor">{{ total_alertas }}</span>
       </div>
       <div class="sc-tarjeta-stat__icono">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3h6l4 4v14H8z"/><path d="M14 3v4h4"/></svg>
@@ -39,15 +39,33 @@
     </div>
   </div>
 
-  <div class="sc-vacio">
-    <p>Los documentos por aprobar se calcularán automáticamente cuando construyamos <strong>Cumplimiento documental</strong> (Fase 5).</p>
-    <p class="sc-vacio__ayuda">Por ahora puedes dar de alta empresas y personas desde el menú lateral.</p>
-  </div>
+  {% if alertas_pendientes %}
+    <div class="sc-tabla-envoltorio">
+      <table class="sc-tabla">
+        <thead><tr><th>Alerta</th><th>Grupo</th><th>Severidad</th><th>Fecha</th></tr></thead>
+        <tbody>
+          {% for alerta in alertas_pendientes %}
+            <tr>
+              <td><strong>{{ alerta.titulo }}</strong><br><span class="text-xs text-gray-500">{{ alerta.mensaje }}</span></td>
+              <td>{{ alerta.agrupador }}</td>
+              <td><span class="sc-estado sc-estado--{{ alerta.severidad|lower }}">{{ alerta.get_severidad_display|default:alerta.severidad }}</span></td>
+              <td>{{ alerta.created_at|date:"d/m/Y H:i" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="sc-vacio">
+      <p>No hay alertas pendientes para tu organización.</p>
+      <p class="sc-vacio__ayuda">Las alertas de vencimientos aparecerán aquí cuando se ejecute el job diario.</p>
+    </div>
+  {% endif %}
 {% endblock %}
 
 {% block panel_lateral %}
   <aside class="sc-panel-lateral">
-    <h2>Documentos por aprobar</h2>
-    <p class="sc-subtitulo" style="margin:0;">Se activa en la Fase 5 (Cumplimiento).</p>
+    <h2>Alertas operativas</h2>
+    <p class="sc-subtitulo" style="margin:0;">Vencimientos, bloqueos y revisiones pendientes.</p>
   </aside>
 {% endblock %}

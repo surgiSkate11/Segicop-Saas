@@ -3,7 +3,7 @@ from django.db import transaction
 
 from apps.core.events import emitir_evento
 from apps.core.exceptions import DomainError
-from apps.identidad.models import AlcanceAsignado, Organizacion, Rol, RolAsignado, Usuario
+from apps.identidad.models import AlcanceAsignado, Rol, RolAsignado, Usuario
 
 
 @transaction.atomic
@@ -32,14 +32,14 @@ def asignar_rol(*, usuario: Usuario, rol: Rol, organizacion, actor: Usuario, ins
     opcional a instalaciones específicas.
     """
     if rol.es_rol_plataforma and organizacion is not None:
-        raise DomainError(
-            "Un rol de plataforma no puede asignarse dentro de una organización."
-        )
+        raise DomainError("Un rol de plataforma no puede asignarse dentro de una organización.")
     if not rol.es_rol_plataforma and organizacion is None:
         raise DomainError(f"El rol '{rol.nombre}' requiere una organización.")
 
     rol_asignado, _ = RolAsignado.objects.get_or_create(
-        usuario=usuario, organizacion=organizacion, rol=rol,
+        usuario=usuario,
+        organizacion=organizacion,
+        rol=rol,
         defaults={"activo": True},
     )
 

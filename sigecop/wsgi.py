@@ -11,6 +11,9 @@ import os
 
 from django.core.wsgi import get_wsgi_application
 
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'sigecop.settings.prod')
+from sigecop.observability import configure_observability
+
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "sigecop.settings.prod")
 
 application = get_wsgi_application()
+configure_observability()

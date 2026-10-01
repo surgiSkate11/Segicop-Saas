@@ -19,8 +19,10 @@ def iniciar_verificacion(*, persona: Persona, actor) -> VerificacionAntecedentes
     modo = ModoConector.MANUAL if isinstance(conector, ConectorManual) else ModoConector.ASISTIDO
 
     verificacion = VerificacionAntecedentes.objects.create(
-        organizacion=persona.organizacion, persona=persona,
-        estado=EstadoVerificacion.SOLICITADA, modo_conector=modo,
+        organizacion=persona.organizacion,
+        persona=persona,
+        estado=EstadoVerificacion.SOLICITADA,
+        modo_conector=modo,
     )
     conector.iniciar(verificacion, actor=actor)
     return verificacion
@@ -32,10 +34,16 @@ def registrar_resultado_manual(*, verificacion, actor, resultado, numero_certifi
         raise DomainError(f"Resultado inválido: {resultado}")
 
     maquina_estados.transicionar(
-        verificacion=verificacion, nuevo_estado=EstadoVerificacion.EN_REVISION_MANUAL, actor=actor,
+        verificacion=verificacion,
+        nuevo_estado=EstadoVerificacion.EN_REVISION_MANUAL,
+        actor=actor,
         nota_bitacora="Resultado cargado manualmente, pendiente de validación.",
-        resultado=resultado, numero_certificado=numero_certificado, proveedor=proveedor,
-        comentario=comentario, fecha_resultado=timezone.now(), cargado_por=actor,
+        resultado=resultado,
+        numero_certificado=numero_certificado,
+        proveedor=proveedor,
+        comentario=comentario,
+        fecha_resultado=timezone.now(),
+        cargado_por=actor,
     )
     return verificacion
 
@@ -56,8 +64,13 @@ def validar_verificacion(*, verificacion, revisor, decision: str, comentario="",
     if decision == EstadoVerificacion.VALIDADA:
         campos["vigente_hasta"] = vigente_hasta
 
-    maquina_estados.transicionar(verificacion=verificacion, nuevo_estado=decision, actor=revisor,
-                                  nota_bitacora=f"Decisión de revisión: {decision}.", **campos)
+    maquina_estados.transicionar(
+        verificacion=verificacion,
+        nuevo_estado=decision,
+        actor=revisor,
+        nota_bitacora=f"Decisión de revisión: {decision}.",
+        **campos,
+    )
     return verificacion
 
 
@@ -65,8 +78,14 @@ def marcar_vencidas(actor=None) -> int:
     """Job en bloque para Celery-beat (Fase 9); por ahora, función normal."""
     hoy = timezone.now().date()
     total = 0
-    for verificacion in VerificacionAntecedentes.objects.filter(estado=EstadoVerificacion.VALIDADA, vigente_hasta__lt=hoy):
-        maquina_estados.transicionar(verificacion=verificacion, nuevo_estado=EstadoVerificacion.VENCIDA, actor=actor,
-                                      nota_bitacora="Vencimiento detectado automáticamente.")
+    for verificacion in VerificacionAntecedentes.objects.filter(
+        estado=EstadoVerificacion.VALIDADA, vigente_hasta__lt=hoy
+    ):
+        maquina_estados.transicionar(
+            verificacion=verificacion,
+            nuevo_estado=EstadoVerificacion.VENCIDA,
+            actor=actor,
+            nota_bitacora="Vencimiento detectado automáticamente.",
+        )
         total += 1
     return total

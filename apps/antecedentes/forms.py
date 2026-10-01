@@ -5,8 +5,12 @@ from apps.antecedentes.models import EstadoVerificacion, ResultadoAntecedentes
 
 class RegistrarResultadoManualForm(forms.Form):
     resultado = forms.ChoiceField(choices=ResultadoAntecedentes.choices, widget=forms.RadioSelect)
-    numero_certificado = forms.CharField(label="N° de certificado", required=False, widget=forms.TextInput(attrs={"class": "sc-input"}))
-    proveedor = forms.CharField(label="Fuente consultada", required=False, widget=forms.TextInput(attrs={"class": "sc-input"}))
+    numero_certificado = forms.CharField(
+        label="N° de certificado", required=False, widget=forms.TextInput(attrs={"class": "sc-input"})
+    )
+    proveedor = forms.CharField(
+        label="Fuente consultada", required=False, widget=forms.TextInput(attrs={"class": "sc-input"})
+    )
     comentario = forms.CharField(required=False, widget=forms.Textarea(attrs={"class": "sc-input", "rows": 2}))
 
 
@@ -17,6 +21,9 @@ class ValidarVerificacionForm(forms.Form):
         (EstadoVerificacion.RECHAZADA, "Rechazar"),
     ]
     decision = forms.ChoiceField(choices=DECISIONES, widget=forms.RadioSelect)
-    vigente_hasta = forms.DateField(label="Vigente hasta (obligatorio si se valida)", required=False,
-                                     widget=forms.DateInput(attrs={"class": "sc-input", "type": "date"}))
+    vigente_hasta = forms.DateField(
+        label="Vigente hasta (obligatorio si se valida)",
+        required=False,
+        widget=forms.DateInput(attrs={"class": "sc-input", "type": "date"}),
+    )
     comentario = forms.CharField(required=False, widget=forms.Textarea(attrs={"class": "sc-input", "rows": 2}))

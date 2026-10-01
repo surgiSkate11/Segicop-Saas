@@ -7,6 +7,7 @@ class EstadoCumplimiento(models.TextChoices):
     cumplimiento" del documento). Lo usan EmpresaContratista.estado y,
     más adelante, Persona.estado.
     """
+
     BORRADOR = "BORRADOR", "Borrador"
     INCOMPLETO = "INCOMPLETO", "Incompleto"
     EN_REVISION = "EN_REVISION", "En revisión"

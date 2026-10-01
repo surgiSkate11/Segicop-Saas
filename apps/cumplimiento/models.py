@@ -1,6 +1,6 @@
 from django.db import models
 
-from apps.core.models import BaseModel, OrganizacionScopedModel
+from apps.core.models import OrganizacionScopedModel
 
 
 class AplicaA(models.TextChoices):
@@ -10,6 +10,7 @@ class AplicaA(models.TextChoices):
 
 class CatalogoRequisito(OrganizacionScopedModel):
     """Catálogo configurable de requisitos documentales por organización."""
+
     codigo = models.SlugField(max_length=60)
     nombre = models.CharField(max_length=200)
     descripcion = models.TextField(blank=True)
@@ -19,7 +20,8 @@ class CatalogoRequisito(OrganizacionScopedModel):
         help_text="Si es obligatorio, su ausencia o rechazo bloquea la habilitación.",
     )
     vigencia_dias = models.PositiveIntegerField(
-        null=True, blank=True,
+        null=True,
+        blank=True,
         help_text="Días de vigencia antes de considerarse vencido. Vacío = sin vencimiento.",
     )
     activo = models.BooleanField(default=True)
@@ -37,6 +39,7 @@ class CatalogoRequisito(OrganizacionScopedModel):
 
 class EstadoRequisito(models.TextChoices):
     """Estado de UN requisito aplicado — distinto del estado corporativo general (RN-007)."""
+
     PENDIENTE = "PENDIENTE", "Pendiente"
     EN_REVISION = "EN_REVISION", "En revisión"
     OBSERVADO = "OBSERVADO", "Observado"
@@ -47,14 +50,21 @@ class EstadoRequisito(models.TextChoices):
 
 class RequisitoAplicado(OrganizacionScopedModel):
     """Vincula un CatalogoRequisito con UNA empresa o UNA persona (nunca ambas)."""
+
     catalogo = models.ForeignKey(CatalogoRequisito, on_delete=models.PROTECT, related_name="aplicaciones")
     empresa = models.ForeignKey(
-        "empresas.EmpresaContratista", on_delete=models.CASCADE,
-        related_name="requisitos_aplicados", null=True, blank=True,
+        "empresas.EmpresaContratista",
+        on_delete=models.CASCADE,
+        related_name="requisitos_aplicados",
+        null=True,
+        blank=True,
     )
     persona = models.ForeignKey(
-        "personas.Persona", on_delete=models.CASCADE,
-        related_name="requisitos_aplicados", null=True, blank=True,
+        "personas.Persona",
+        on_delete=models.CASCADE,
+        related_name="requisitos_aplicados",
+        null=True,
+        blank=True,
     )
     estado = models.CharField(max_length=20, choices=EstadoRequisito.choices, default=EstadoRequisito.PENDIENTE)
     fecha_limite = models.DateField(null=True, blank=True)
@@ -80,6 +90,7 @@ class RequisitoAplicado(OrganizacionScopedModel):
 
 class DocumentoVersion(OrganizacionScopedModel):
     """Versión INMUTABLE de un documento (RN-001): renovar = fila nueva, nunca editar."""
+
     requisito_aplicado = models.ForeignKey(RequisitoAplicado, on_delete=models.CASCADE, related_name="documentos")
     archivo = models.FileField(upload_to="cumplimiento/documentos/%Y/%m/")
     hash_sha256 = models.CharField(max_length=64, editable=False)
@@ -102,6 +113,7 @@ class DocumentoVersion(OrganizacionScopedModel):
 
 class Revision(OrganizacionScopedModel):
     """Decisión humana sobre UNA versión. Solo-anexado (AC-010): nunca se edita ni borra."""
+
     class Decision(models.TextChoices):
         APROBADO = "APROBADO", "Aprobado"
         OBSERVADO = "OBSERVADO", "Observado"

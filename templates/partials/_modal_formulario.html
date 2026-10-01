@@ -1,0 +1,36 @@
+{# Modal genérico de formulario. Contexto: form, titulo, accion_url, boton #}
+<div class="sc-modal-fondo">
+  <div class="sc-modal-caja" role="dialog" aria-modal="true" aria-label="{{ titulo }}">
+    <div class="sc-modal-cabecera">
+      <span class="sc-modal-titulo">{{ titulo }}</span>
+      <button type="button" class="sc-modal-cerrar" aria-label="Cerrar"
+              onclick="document.getElementById('sc-modal').innerHTML=''">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+
+    <form hx-post="{{ accion_url }}" hx-target="#sc-modal" hx-swap="innerHTML">
+      <div class="sc-modal-cuerpo">
+        {% if form.non_field_errors %}
+          <ul class="sc-errores">
+            {% for error in form.non_field_errors %}<li>{{ error }}</li>{% endfor %}
+          </ul>
+        {% endif %}
+
+        {% for field in form %}
+          <div class="sc-campo">
+            <label for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %} *{% endif %}</label>
+            {{ field }}
+            {% for error in field.errors %}<p class="text-xs text-red-600 mt-1">{{ error }}</p>{% endfor %}
+          </div>
+        {% endfor %}
+      </div>
+
+      <div class="sc-modal-pie">
+        <button type="button" class="sc-boton-secundario"
+                onclick="document.getElementById('sc-modal').innerHTML=''">Cancelar</button>
+        <button type="submit" class="sc-boton-primario">{{ boton }}</button>
+      </div>
+    </form>
+  </div>
+</div>

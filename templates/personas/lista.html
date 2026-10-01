@@ -9,25 +9,52 @@
     <div>
       <p class="sc-etiqueta-seccion">Personas</p>
       <h1>Personas</h1>
-      <p class="sc-subtitulo" style="margin:0;">{{ personas|length }} persona(s) registrada(s).</p>
+      <p class="sc-subtitulo !mb-0">{{ personas|length }} persona(s) registrada(s).</p>
     </div>
-    <a href="{% url 'admin:personas_persona_add' %}" class="sc-boton-primario">+ Nueva persona</a>
+    <button type="button" class="sc-boton-primario"
+            hx-get="{% url 'personas:crear' %}" hx-target="#sc-modal" hx-swap="innerHTML">
+      + Nueva persona
+    </button>
   </div>
 
   {% if personas %}
     <div class="sc-tabla-envoltorio">
       <table class="sc-tabla">
-        <thead><tr><th>Nombre</th><th>Documento</th><th>Estado</th><th>Empresa(s)</th></tr></thead>
+        <thead>
+          <tr><th>Nombre</th><th>Documento</th><th>Estado</th><th>Empresa(s)</th><th class="text-right">Acciones</th></tr>
+        </thead>
         <tbody>
           {% for persona in personas %}
             <tr>
-              <td><a href="{% url 'admin:personas_persona_change' persona.pk %}">{{ persona.nombre_completo }}</a></td>
+              <td>
+                <a href="#" hx-get="{% url 'personas:editar' persona.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
+                  {{ persona.nombre_completo }}
+                </a>
+              </td>
               <td>{{ persona.get_tipo_documento_display }} {{ persona.numero_documento }}</td>
               <td><span class="sc-estado sc-estado--{{ persona.estado|lower }}">{{ persona.get_estado_display }}</span></td>
               <td>
                 {% for asignacion in persona.asignaciones.all %}
                   {{ asignacion.empresa.razon_social }}{% if not forloop.last %}, {% endif %}
-                {% empty %}<span class="sc-subtitulo" style="margin:0;">Sin asignar</span>{% endfor %}
+                {% empty %}
+                  <span class="text-gray-400">Sin asignar</span>
+                {% endfor %}
+              </td>
+              <td>
+                <div class="flex flex-wrap justify-end gap-1.5">
+                  <button type="button" class="sc-boton-secundario"
+                          hx-get="{% url 'personas:asignar' persona.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
+                    Asignar a empresa
+                  </button>
+                  <form method="post" action="{% url 'antecedentes:iniciar' persona.pk %}">
+                    {% csrf_token %}
+                    <button type="submit" class="sc-boton-secundario">Verificar antecedentes</button>
+                  </form>
+                  <button type="button" class="sc-boton-secundario"
+                          hx-get="{% url 'accesos:solicitar' persona.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
+                    Solicitar ingreso
+                  </button>
+                </div>
               </td>
             </tr>
           {% endfor %}

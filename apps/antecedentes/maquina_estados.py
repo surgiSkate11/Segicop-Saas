@@ -8,8 +8,11 @@ TRANSICIONES: dict[str, set[str]] = {
     E.SOLICITADA: {E.CONTINGENCIA_MANUAL, E.EN_COLA, E.FALLIDA_TECNICA},
     E.EN_COLA: {E.EN_PROCESO},
     E.EN_PROCESO: {
-        E.REINTENTANDO, E.FALLIDA_TECNICA,
-        E.RESULTADO_SI_OBTENIDO, E.RESULTADO_NO_OBTENIDO, E.RESULTADO_NO_DETERMINADO,
+        E.REINTENTANDO,
+        E.FALLIDA_TECNICA,
+        E.RESULTADO_SI_OBTENIDO,
+        E.RESULTADO_NO_OBTENIDO,
+        E.RESULTADO_NO_DETERMINADO,
     },
     E.REINTENTANDO: {E.EN_PROCESO, E.FALLIDA_TECNICA},
     E.FALLIDA_TECNICA: {E.CONTINGENCIA_MANUAL},
@@ -37,10 +40,16 @@ def transicionar(*, verificacion, nuevo_estado: str, actor=None, nota_bitacora: 
     verificacion.save()
 
     EjecucionConector.objects.create(
-        verificacion=verificacion, estado_resultante=nuevo_estado,
-        exito=nuevo_estado != E.FALLIDA_TECNICA, detalle=nota_bitacora,
+        verificacion=verificacion,
+        estado_resultante=nuevo_estado,
+        exito=nuevo_estado != E.FALLIDA_TECNICA,
+        detalle=nota_bitacora,
     )
-    emitir_evento(actor=actor, accion="TRANSICION_ANTECEDENTES", recurso=verificacion,
-                  organizacion=verificacion.organizacion,
-                  motivo=f"{estado_anterior} -> {nuevo_estado}. {nota_bitacora}".strip())
+    emitir_evento(
+        actor=actor,
+        accion="TRANSICION_ANTECEDENTES",
+        recurso=verificacion,
+        organizacion=verificacion.organizacion,
+        motivo=f"{estado_anterior} -> {nuevo_estado}. {nota_bitacora}".strip(),
+    )
     return verificacion

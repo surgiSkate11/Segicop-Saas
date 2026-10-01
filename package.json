@@ -1,0 +1,12 @@
+{
+  "name": "sigecop",
+  "version": "1.0.0",
+  "scripts": {
+    "build:css": "tailwindcss -i ./static_src/input.css -o ./static/css/tailwind.css --minify",
+    "watch:css": "tailwindcss -i ./static_src/input.css -o ./static/css/tailwind.css --watch"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
+    "tailwindcss": "^4.3.3"
+  }
+}

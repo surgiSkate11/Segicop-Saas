@@ -41,7 +41,10 @@ class VerificacionAntecedentes(OrganizacionScopedModel):
     `resultado` y `numero_certificado` quedan marcados como PENDIENTES
     de cifrado a nivel de aplicación antes de producción.
     """
-    persona = models.ForeignKey("personas.Persona", on_delete=models.CASCADE, related_name="verificaciones_antecedentes")
+
+    persona = models.ForeignKey(
+        "personas.Persona", on_delete=models.CASCADE, related_name="verificaciones_antecedentes"
+    )
     estado = models.CharField(max_length=30, choices=EstadoVerificacion.choices, default=EstadoVerificacion.SOLICITADA)
     modo_conector = models.CharField(max_length=10, choices=ModoConector.choices)
     resultado = models.CharField(max_length=20, choices=ResultadoAntecedentes.choices, null=True, blank=True)
@@ -50,8 +53,12 @@ class VerificacionAntecedentes(OrganizacionScopedModel):
     comentario = models.TextField(blank=True)
     fecha_resultado = models.DateTimeField(null=True, blank=True)
     vigente_hasta = models.DateField(null=True, blank=True)
-    cargado_por = models.ForeignKey("identidad.Usuario", on_delete=models.PROTECT, null=True, blank=True, related_name="+")
-    validado_por = models.ForeignKey("identidad.Usuario", on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    cargado_por = models.ForeignKey(
+        "identidad.Usuario", on_delete=models.PROTECT, null=True, blank=True, related_name="+"
+    )
+    validado_por = models.ForeignKey(
+        "identidad.Usuario", on_delete=models.PROTECT, null=True, blank=True, related_name="+"
+    )
 
     class Meta:
         verbose_name = "Verificación de antecedentes"
@@ -64,6 +71,7 @@ class VerificacionAntecedentes(OrganizacionScopedModel):
 
 class EjecucionConector(BaseModel):
     """Bitácora de solo-anexado; su organización se alcanza vía verificacion.organizacion."""
+
     verificacion = models.ForeignKey(VerificacionAntecedentes, on_delete=models.CASCADE, related_name="ejecuciones")
     estado_resultante = models.CharField(max_length=30, choices=EstadoVerificacion.choices)
     exito = models.BooleanField(default=True)

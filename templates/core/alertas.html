@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block titulo %}Alertas · SIGECOP{% endblock %}
+{% block nav_alertas %}activo{% endblock %}
+{% block migas %}Operación <span class="sc-migas__sep">/</span> <strong>Alertas</strong>{% endblock %}
+
+{% block contenido %}
+  <div class="sc-cabecera-lista">
+    <div>
+      <p class="sc-etiqueta-seccion">Centro operativo</p>
+      <h1>Alertas y vencimientos</h1>
+      <p class="sc-subtitulo">Alertas agrupadas por tipo para las organizaciones que administras.</p>
+    </div>
+    <div class="flex gap-2">
+      <a href="{% url 'core:exportar_alertas' %}?formato=csv" class="sc-boton-secundario">Exportar CSV</a>
+      <a href="{% url 'core:exportar_alertas' %}?formato=xlsx" class="sc-boton-secundario">Exportar XLSX</a>
+    </div>
+  </div>
+
+  {% if agrupadas %}
+    {% for grupo, alertas in agrupadas.items %}
+      <section class="mb-7">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-sm font-extrabold text-gray-700">{{ grupo }}</h2>
+          <span class="text-xs font-semibold text-gray-400">{{ alertas|length }} alertas</span>
+        </div>
+        <div class="sc-tabla-envoltorio">
+          <table class="sc-tabla">
+            <thead><tr><th>Alerta</th><th>Severidad</th><th>Estado</th><th>Acción</th></tr></thead>
+            <tbody>
+              {% for alerta in alertas %}
+                <tr>
+                  <td><strong>{{ alerta.titulo }}</strong><br><span class="text-xs text-gray-500">{{ alerta.mensaje }}</span></td>
+                  <td><span class="sc-estado sc-estado--{{ alerta.severidad|lower }}">{{ alerta.severidad }}</span></td>
+                  <td><span class="sc-estado sc-estado--{{ alerta.estado|lower }}">{{ alerta.get_estado_display }}</span></td>
+                  <td>
+                    {% if alerta.estado == "PENDIENTE" %}
+                      <form method="post" action="{% url 'core:alerta_leer' alerta.pk %}">
+                        {% csrf_token %}
+                        <button class="sc-boton-secundario" type="submit">Marcar leída</button>
+                      </form>
+                    {% else %}
+                      <span class="text-xs text-gray-400">Sin acción</span>
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    {% endfor %}
+  {% else %}
+    <div class="sc-vacio">
+      <p>No hay alertas registradas.</p>
+      <p class="sc-vacio__ayuda">El job diario mostrará aquí los vencimientos detectados.</p>
+    </div>
+  {% endif %}
+{% endblock %}

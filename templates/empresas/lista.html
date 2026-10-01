@@ -1,38 +1,53 @@
 {% extends "base.html" %}
 
 {% block titulo %}Empresas · SIGECOP{% endblock %}
-{% block migas %}Espacio de trabajo <span class="sc-migas__sep">/</span> <strong>Empresas</strong>{% endblock %}
 {% block nav_empresas %}activo{% endblock %}
+{% block migas %}Espacio de trabajo <span class="sc-migas__sep">/</span> <strong>Empresas</strong>{% endblock %}
 
 {% block contenido %}
   <div class="sc-cabecera-lista">
     <div>
       <p class="sc-etiqueta-seccion">Empresas</p>
       <h1>Empresas contratistas</h1>
-      <p class="sc-subtitulo" style="margin:0;">{{ empresas|length }} empresa(s) registrada(s).</p>
+      <p class="sc-subtitulo !mb-0">{{ empresas|length }} empresa(s) registrada(s).</p>
     </div>
-    <a href="{% url 'admin:empresas_empresacontratista_add' %}" class="sc-boton-primario">
+    <button type="button" class="sc-boton-primario"
+            hx-get="{% url 'empresas:crear' %}" hx-target="#sc-modal" hx-swap="innerHTML">
       + Nueva empresa
-    </a>
+    </button>
   </div>
 
   {% if empresas %}
     <div class="sc-tabla-envoltorio">
       <table class="sc-tabla">
         <thead>
-          <tr><th>Razón social</th><th>RUC</th><th>Estado</th><th>Contratos</th></tr>
+          <tr>
+            <th>Razón social</th>
+            <th>RUC</th>
+            <th>Estado</th>
+            <th>Contratos</th>
+            <th class="text-right">Acciones</th>
+          </tr>
         </thead>
         <tbody>
           {% for empresa in empresas %}
             <tr>
               <td>
-                <a href="{% url 'admin:empresas_empresacontratista_change' empresa.pk %}">{{ empresa.razon_social }}</a>
+                <a href="#" hx-get="{% url 'empresas:editar' empresa.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
+                  {{ empresa.razon_social }}
+                </a>
               </td>
               <td>{{ empresa.ruc }}</td>
               <td>
                 <span class="sc-estado sc-estado--{{ empresa.estado|lower }}">{{ empresa.get_estado_display }}</span>
               </td>
               <td>{{ empresa.contratos.count }}</td>
+              <td class="text-right">
+                <button type="button" class="sc-boton-secundario"
+                        hx-get="{% url 'trabajos:crear' empresa.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
+                  Nuevo permiso de trabajo
+                </button>
+              </td>
             </tr>
           {% endfor %}
         </tbody>

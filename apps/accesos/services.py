@@ -34,7 +34,9 @@ def calcular_habilitacion(persona: Persona) -> ResultadoHabilitacion:
 
     empresa = asignacion_activa.empresa
     if empresa.estado not in _ESTADOS_HABILITANTES:
-        return ResultadoHabilitacion(False, f"La empresa '{empresa.razon_social}' está en estado {empresa.get_estado_display()}.")
+        return ResultadoHabilitacion(
+            False, f"La empresa '{empresa.razon_social}' está en estado {empresa.get_estado_display()}."
+        )
 
     hoy = timezone.now().date()
     verificacion = (
@@ -45,24 +47,39 @@ def calcular_habilitacion(persona: Persona) -> ResultadoHabilitacion:
     if verificacion.vigente_hasta and verificacion.vigente_hasta < hoy:
         return ResultadoHabilitacion(False, "La verificación de antecedentes validada ya venció.")
     if verificacion.resultado != ResultadoAntecedentes.NO:
-        return ResultadoHabilitacion(False, f"El resultado de antecedentes es '{verificacion.get_resultado_display()}' y requiere revisión humana adicional.")
+        return ResultadoHabilitacion(
+            False,
+            f"El resultado de antecedentes es '{verificacion.get_resultado_display()}' y requiere revisión humana adicional.",
+        )
 
     return ResultadoHabilitacion(True, "Cumple estado documental, estado de empresa y antecedentes vigentes.")
 
 
 @transaction.atomic
-def solicitar_permiso_ingreso(*, persona, instalacion, actor, fecha_inicio_vigencia, fecha_fin_vigencia) -> PermisoIngreso:
+def solicitar_permiso_ingreso(
+    *, persona, instalacion, actor, fecha_inicio_vigencia, fecha_fin_vigencia
+) -> PermisoIngreso:
     if fecha_fin_vigencia <= fecha_inicio_vigencia:
         raise DomainError("La fecha de fin de vigencia debe ser posterior a la de inicio.")
 
     resultado = calcular_habilitacion(persona)
     permiso = PermisoIngreso.objects.create(
-        organizacion=persona.organizacion, persona=persona, instalacion=instalacion,
+        organizacion=persona.organizacion,
+        persona=persona,
+        instalacion=instalacion,
         estado=EstadoPermiso.APROBADO if resultado.habilitado else EstadoPermiso.RECHAZADO,
-        motivo=resultado.motivo, fecha_inicio_vigencia=fecha_inicio_vigencia, fecha_fin_vigencia=fecha_fin_vigencia,
+        motivo=resultado.motivo,
+        fecha_inicio_vigencia=fecha_inicio_vigencia,
+        fecha_fin_vigencia=fecha_fin_vigencia,
         aprobado_por=actor if resultado.habilitado else None,
     )
-    emitir_evento(actor=actor, accion="SOLICITAR_PERMISO_INGRESO", recurso=permiso, organizacion=persona.organizacion, motivo=resultado.motivo)
+    emitir_evento(
+        actor=actor,
+        accion="SOLICITAR_PERMISO_INGRESO",
+        recurso=permiso,
+        organizacion=persona.organizacion,
+        motivo=resultado.motivo,
+    )
     return permiso
 
 
@@ -71,9 +88,17 @@ def registrar_evento_acceso(*, codigo, instalacion, tipo: str, actor) -> EventoA
     if tipo not in {TipoEvento.ENTRADA, TipoEvento.SALIDA}:
         raise DomainError(f"Tipo de evento inválido: {tipo}")
 
+    organizaciones_del_actor = set(
+        actor.roles_asignados.filter(activo=True, organizacion__isnull=False).values_list("organizacion_id", flat=True)
+    )
+    if instalacion.organizacion_id not in organizaciones_del_actor:
+        raise DomainError("El operador no tiene acceso a esta organización.")
+
     permiso = PermisoIngreso.objects.filter(codigo=codigo).select_related("persona", "instalacion").first()
     if not permiso:
         raise DomainError("Código no reconocido. No se puede registrar el evento sin una persona identificada.")
+    if permiso.organizacion_id != instalacion.organizacion_id:
+        raise DomainError("El permiso y la instalación pertenecen a organizaciones distintas.")
 
     motivo_denegacion = ""
     if permiso.estado != EstadoPermiso.APROBADO:
@@ -85,11 +110,20 @@ def registrar_evento_acceso(*, codigo, instalacion, tipo: str, actor) -> EventoA
 
     tipo_evento = TipoEvento.DENEGADO if motivo_denegacion else tipo
     evento = EventoAcceso.objects.create(
-        permiso_ingreso=permiso, persona=permiso.persona, instalacion=instalacion,
-        tipo=tipo_evento, motivo_denegacion=motivo_denegacion, registrado_por=actor,
+        permiso_ingreso=permiso,
+        persona=permiso.persona,
+        instalacion=instalacion,
+        tipo=tipo_evento,
+        motivo_denegacion=motivo_denegacion,
+        registrado_por=actor,
     )
-    emitir_evento(actor=actor, accion=f"EVENTO_ACCESO_{tipo_evento}", recurso=evento,
-                  organizacion=permiso.organizacion, motivo=motivo_denegacion or "Acceso registrado normalmente.")
+    emitir_evento(
+        actor=actor,
+        accion=f"EVENTO_ACCESO_{tipo_evento}",
+        recurso=evento,
+        organizacion=permiso.organizacion,
+        motivo=motivo_denegacion or "Acceso registrado normalmente.",
+    )
     return evento
 
 
@@ -100,6 +134,11 @@ def marcar_vencidos(actor=None) -> int:
     for permiso in permisos:
         permiso.estado = EstadoPermiso.VENCIDO
         permiso.save(update_fields=["estado", "updated_at"])
-        emitir_evento(actor=actor, accion="PERMISO_INGRESO_VENCIDO", recurso=permiso,
-                      organizacion=permiso.organizacion, motivo="Vencimiento detectado automáticamente.")
+        emitir_evento(
+            actor=actor,
+            accion="PERMISO_INGRESO_VENCIDO",
+            recurso=permiso,
+            organizacion=permiso.organizacion,
+            motivo="Vencimiento detectado automáticamente.",
+        )
     return total

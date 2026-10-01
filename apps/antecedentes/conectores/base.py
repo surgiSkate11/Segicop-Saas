@@ -10,5 +10,4 @@ class ResultadoConector:
 
 class ConectorAntecedentes(ABC):
     @abstractmethod
-    def iniciar(self, verificacion, actor=None) -> ResultadoConector:
-        ...
+    def iniciar(self, verificacion, actor=None) -> ResultadoConector: ...

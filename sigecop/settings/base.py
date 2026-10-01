@@ -29,6 +29,8 @@ INSTALLED_APPS = [
     "rest_framework",
     "drf_spectacular",
     "django_htmx",
+    "django_otp",
+    "django_otp.plugins.otp_totp",
     # Apps propias
     "apps.core",
     "apps.identidad",
@@ -38,7 +40,6 @@ INSTALLED_APPS = [
     "apps.antecedentes",
     "apps.accesos",
     "apps.trabajos",
-    
 ]
 
 MIDDLEWARE = [
@@ -47,6 +48,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django_otp.middleware.OTPMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "django_htmx.middleware.HtmxMiddleware",
@@ -111,6 +113,39 @@ LOGOUT_REDIRECT_URL = "identidad:login"
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+STATICFILES_DIRS = [BASE_DIR / "static"]
 
-MEDIA_URL = "media/"       
-MEDIA_ROOT = BASE_DIR / "media"  
+MEDIA_URL = "media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
+CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://localhost:6379/0")
+CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default="redis://localhost:6379/1")
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_BEAT_SCHEDULE = {
+    "procesar-vencimientos-diario": {
+        "task": "apps.core.tasks.procesar_vencimientos",
+        "schedule": 86400.0,
+    },
+}
+
+OTEL_ENABLED = env.bool("OTEL_ENABLED", default=False)
+OTEL_SERVICE_NAME = env("OTEL_SERVICE_NAME", default="sigecop")
+OTEL_EXPORTER_OTLP_ENDPOINT = env("OTEL_EXPORTER_OTLP_ENDPOINT", default="")
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "json": {"()": "sigecop.logging.JsonFormatter"},
+    },
+    "handlers": {
+        "console_json": {
+            "class": "logging.StreamHandler",
+            "formatter": "json",
+        },
+    },
+    "loggers": {
+        "django": {"handlers": ["console_json"], "level": "INFO", "propagate": False},
+        "sigecop": {"handlers": ["console_json"], "level": "INFO", "propagate": False},
+    },
+}

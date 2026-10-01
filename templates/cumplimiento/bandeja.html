@@ -5,7 +5,13 @@
 
 {% block contenido %}
   <p class="sc-etiqueta-seccion">Documentos</p>
-  <h1>Bandeja de revisión</h1>
+  <div class="sc-cabecera-lista">
+    <div>
+      <h1>Bandeja de revisión</h1>
+      <p class="sc-subtitulo !mb-0">Requisitos con una versión de documento esperando decisión.</p>
+    </div>
+    <a href="{% url 'cumplimiento:catalogo' %}" class="sc-boton-secundario">Ver catálogo de requisitos</a>
+  </div>
   <p class="sc-subtitulo">Requisitos con una versión de documento esperando decisión.</p>
 
   {% if requisitos %}

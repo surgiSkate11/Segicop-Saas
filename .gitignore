@@ -17,6 +17,10 @@ venv/
 doc/
 # Ignoramos los roles iniciales 
 apps/identidad/fixtures/roles_iniciales.json
+# Node / Tailwind
+node_modules/
+static/css/tailwind.css
+celerybeat-schedule*
 
 
 

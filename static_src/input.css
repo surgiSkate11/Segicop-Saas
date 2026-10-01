@@ -1,0 +1,217 @@
+@import "tailwindcss";
+
+/* Todos nuestros templates viven en /templates (no dentro de cada app),
+   así que le indicamos a Tailwind v4 explícitamente dónde buscar clases. */
+@source "../templates";
+
+/* ------------------------------------------------------------------ */
+/* Tokens de marca: quedan disponibles como utilidades normales        */
+/* (bg-brand-600, text-brand-700, border-brand-200, etc.)              */
+/* ------------------------------------------------------------------ */
+@theme {
+  --color-brand-50: #FFF4EC;
+  --color-brand-100: #FFE4D1;
+  --color-brand-200: #FFC7A3;
+  --color-brand-300: #FF9F66;
+  --color-brand-400: #F17B3F;
+  --color-brand-500: #E8622C;
+  --color-brand-600: #C94F20;
+  --color-brand-700: #A33E19;
+  --color-brand-800: #7A2F13;
+  --color-brand-900: #57210D;
+}
+
+/* ------------------------------------------------------------------ */
+/* Componentes: la MISMA clase (sc-*) que ya usan las 8 plantillas     */
+/* existentes, ahora resuelta con utilidades de Tailwind por dentro.   */
+/* Ningún template hijo necesita cambiar por este archivo.             */
+/* ------------------------------------------------------------------ */
+@layer components {
+  /* ---------- Layout general ---------- */
+  .sc-main   { @apply flex-1 flex flex-col min-w-0; }
+  .sc-cuerpo { @apply flex flex-1 min-h-0 overflow-auto; }
+  .sc-contenido { @apply flex-1 px-10 py-9 min-w-0; }
+  .sc-contenido h1 { @apply text-2xl font-bold text-blue-800 tracking-tight mb-1; }
+  .sc-subtitulo { @apply text-sm text-gray-500 mb-7; }
+  .sc-etiqueta-seccion { @apply text-xs font-bold uppercase tracking-wider text-brand-600 mb-1; }
+  .sc-cabecera-lista { @apply flex items-center justify-between mb-6; }
+
+  /* ---------- Sidebar ---------- */
+  .sc-sidebar {
+    @apply w-44 shrink-0 flex flex-col items-center pt-6 pb-4 text-white;
+    background: linear-gradient(165deg, var(--color-brand-600) 0%, var(--color-brand-500) 55%, var(--color-brand-400) 100%);
+  }
+  .sc-marca { @apply flex flex-col items-center gap-1 mb-6 px-3 text-center; }
+  .sc-marca__icono { @apply w-11 h-11 rounded-xl bg-white/20 flex items-center justify-center; }
+  .sc-marca__icono svg { @apply w-6 h-6; }
+  .sc-marca__nombre { @apply text-base font-extrabold tracking-tight; }
+  .sc-marca__lema { @apply text-[10px] text-white/75 leading-tight; }
+
+  .sc-espacio-trabajo { @apply hidden; }
+
+  .sc-nav-seccion { @apply text-[10px] font-bold uppercase tracking-wider text-white/55 mt-4 mb-1.5 first:mt-1; }
+  .sc-nav { @apply flex flex-col items-center gap-1 w-full px-2; }
+  .sc-nav-item {
+    @apply w-full flex flex-col items-center gap-1 px-1 py-2.5 rounded-lg text-white/80 text-[11px] font-medium
+           text-center leading-tight no-underline transition-colors duration-150;
+  }
+  .sc-nav-item svg { @apply w-5 h-5 stroke-[1.75]; }
+  .sc-nav-item:hover { @apply bg-black/10 text-white; }
+  .sc-nav-item.activo { @apply bg-white/20 text-white font-semibold; }
+  .sc-nav-item.deshabilitado { @apply text-white/35 cursor-default; }
+  .sc-nav-item.deshabilitado:hover { @apply bg-transparent text-white/35; }
+
+  .sc-sidebar-pie { @apply mt-auto w-full px-3 pt-4 border-t border-white/20; }
+  .sc-sidebar-pie__estado { @apply flex items-center gap-1.5 text-[11px] text-white/75 mb-3; }
+  .sc-perfil-mini { @apply flex items-center gap-2; }
+  .sc-perfil-mini__avatar { @apply w-8 h-8 rounded-full bg-white text-brand-700 flex items-center justify-center font-bold text-xs shrink-0; }
+  .sc-perfil-mini__nombre { @apply text-xs font-semibold leading-tight; }
+  .sc-perfil-mini__rol { @apply text-[10px] text-white/70; }
+
+  .sc-punto-activo { @apply inline-block w-1.5 h-1.5 rounded-full bg-emerald-400; }
+
+  /* ---------- Topbar ---------- */
+  .sc-topbar { @apply h-16 shrink-0 flex items-center gap-4 px-8 bg-white border-b border-gray-200; }
+  .sc-migas { @apply flex items-center gap-1.5 text-sm text-gray-400; }
+  .sc-migas strong { @apply text-gray-700 font-semibold; }
+  .sc-migas a { @apply text-gray-400 no-underline hover:text-brand-600; }
+  .sc-migas__sep { @apply text-gray-300; }
+
+  .sc-topbar-derecha { @apply ml-auto flex items-center gap-4; }
+  .sc-buscador {
+    @apply hidden md:flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2
+           w-56 text-gray-400 text-sm;
+  }
+  .sc-buscador svg { @apply w-4 h-4 shrink-0; }
+  .sc-icono-boton {
+    @apply w-9 h-9 rounded-lg flex items-center justify-center bg-white border border-gray-200
+           text-gray-400 hover:text-brand-600 hover:border-brand-300 transition-colors cursor-pointer;
+  }
+  .sc-icono-boton svg { @apply w-4 h-4; }
+  .sc-icono-denegado { @apply !bg-red-50 !text-red-600; }
+
+  /* ---------- Tarjetas de estadística ---------- */
+  .sc-grilla-stats { @apply grid gap-4 mb-7; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+  .sc-tarjeta-stat {
+    @apply bg-white border border-gray-200 rounded-xl p-5 shadow-sm flex items-start justify-between;
+    border-top: 3px solid var(--sc-stat-color, var(--color-brand-500));
+  }
+  .sc-tarjeta-stat__texto { @apply flex flex-col gap-2; }
+  .sc-tarjeta-stat__titulo { @apply text-xs font-semibold text-gray-500; }
+  .sc-tarjeta-stat__valor { @apply text-2xl font-extrabold text-gray-800 tracking-tight; }
+  .sc-tarjeta-stat__icono {
+    @apply w-9 h-9 rounded-lg flex items-center justify-center shrink-0;
+    background: var(--sc-stat-fondo-icono, var(--color-brand-50));
+    color: var(--sc-stat-color, var(--color-brand-600));
+  }
+  .sc-tarjeta-stat__icono svg { @apply w-4.5 h-4.5; }
+  .sc-tarjeta-stat--verde { --sc-stat-color: #0D9488; --sc-stat-fondo-icono: #CCFBF1; }
+  .sc-tarjeta-stat--azul  { --sc-stat-color: #1D4ED8; --sc-stat-fondo-icono: #DBEAFE; }
+
+  /* ---------- Banner ---------- */
+  .sc-banner { @apply flex items-center gap-4 bg-white border border-gray-200 rounded-xl p-5 mb-7 shadow-sm; }
+  .sc-banner__icono { @apply w-10 h-10 rounded-lg shrink-0 flex items-center justify-center bg-blue-50 text-blue-700; }
+  .sc-banner__icono svg { @apply w-5 h-5; }
+  .sc-banner__icono--verde { @apply bg-teal-50 text-teal-600; }
+  .sc-banner__titulo { @apply text-sm font-bold text-gray-800 mb-0.5; }
+  .sc-banner__detalle { @apply text-[13px] text-gray-500; }
+
+  /* ---------- Mensajes ---------- */
+  .sc-errores { @apply list-none m-0 mb-4 px-3.5 py-2.5 bg-red-50 text-red-700 rounded-lg text-sm; }
+  .mensajes { @apply list-none m-0 px-10 pt-4; }
+  .mensaje { @apply inline-block px-3.5 py-2 rounded-lg text-sm font-medium; }
+  .mensaje--error { @apply bg-red-50 text-red-700; }
+  .mensaje--success { @apply bg-emerald-50 text-emerald-700; }
+
+  /* ---------- Estado vacío ---------- */
+  .sc-vacio { @apply border border-dashed border-gray-300 rounded-xl p-7 bg-gray-50; }
+  .sc-vacio p { @apply text-sm text-gray-500 mb-1.5; }
+  .sc-vacio__ayuda { @apply text-sm; }
+
+  /* ---------- Tablas de datos ---------- */
+  .sc-tabla-envoltorio { @apply bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm; }
+  .sc-tabla { @apply w-full border-collapse; }
+  .sc-tabla thead th {
+    @apply text-left text-[11px] font-bold uppercase tracking-wide text-white px-4 py-3;
+    background: var(--color-brand-500);
+  }
+  .sc-tabla tbody td { @apply px-4 py-3.5 text-sm text-gray-700 border-b border-gray-100; }
+  .sc-tabla tbody tr:last-child td { @apply border-b-0; }
+  .sc-tabla tbody tr:hover { @apply bg-brand-50/60; }
+  .sc-tabla a { @apply text-blue-700 font-semibold no-underline hover:underline; }
+
+  /* ---------- Chips de estado ---------- */
+  .sc-estado { @apply inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full; }
+  .sc-estado--borrador, .sc-estado--incompleto, .sc-estado--solicitado, .sc-estado--solicitada,
+  .sc-estado--en_cola, .sc-estado--cerrado, .sc-estado--vencida {
+    @apply bg-gray-100 text-gray-600;
+  }
+  .sc-estado--en_revision, .sc-estado--observado, .sc-estado--en_proceso, .sc-estado--reintentando,
+  .sc-estado--contingencia_manual, .sc-estado--en_revision_manual, .sc-estado--resultado_no_determinado,
+  .sc-estado--resultado_si_obtenido, .sc-estado--observada, .sc-estado--salida {
+    @apply bg-amber-50 text-amber-700;
+  }
+  .sc-estado--habilitado, .sc-estado--habilitado_con_condiciones, .sc-estado--aprobado,
+  .sc-estado--validada, .sc-estado--resultado_no_obtenido, .sc-estado--activo, .sc-estado--entrada {
+    @apply bg-emerald-50 text-emerald-700;
+  }
+  .sc-estado--suspendido, .sc-estado--vencido, .sc-estado--no_habilitado, .sc-estado--rechazado,
+  .sc-estado--rechazada, .sc-estado--fallida_tecnica, .sc-estado--denegado {
+    @apply bg-red-50 text-red-700;
+  }
+
+  /* ---------- Botones ---------- */
+  .sc-boton-primario {
+    @apply inline-flex items-center gap-1.5 bg-blue-800 hover:bg-blue-900 text-white text-sm font-semibold
+           px-4 py-2.5 rounded-lg transition-colors cursor-pointer border-0 no-underline;
+  }
+  .sc-boton-secundario {
+    @apply inline-flex items-center gap-1.5 bg-white hover:border-brand-400 hover:text-brand-600 text-gray-700
+           text-sm font-semibold px-3.5 py-2 rounded-lg border border-gray-200 transition-colors cursor-pointer no-underline;
+  }
+  .sc-boton {
+    @apply w-full mt-1.5 inline-flex items-center justify-center gap-1.5 bg-blue-800 hover:bg-blue-900
+           text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors cursor-pointer border-0;
+  }
+
+  /* ---------- Formularios ---------- */
+  .sc-campo { @apply mb-3.5; }
+  .sc-campo label { @apply block text-xs font-semibold text-gray-600 mb-1.5; }
+  .sc-input {
+    @apply w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-800
+           focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-brand-400;
+  }
+
+  /* ---------- Login ---------- */
+  .sc-login { @apply w-[380px] bg-white border border-gray-200 rounded-2xl shadow-xl p-10; }
+  .sc-login__logo {
+    @apply w-11 h-11 rounded-xl flex items-center justify-center mx-auto mb-5;
+    background: linear-gradient(160deg, var(--color-brand-600), var(--color-brand-400));
+  }
+  .sc-login h1 { @apply text-center text-lg font-extrabold tracking-tight text-gray-800 mb-1; }
+  .sc-login .sc-subtitulo { @apply text-center mb-7; }
+
+  /* ---------- Panel lateral ---------- */
+  .sc-panel-lateral { @apply w-72 shrink-0 px-6 py-9 border-l border-gray-200 bg-white; }
+  .sc-panel-lateral h2 { @apply text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-4; }
+  .sc-tarjeta-pendiente { @apply bg-gray-50 border border-gray-200 rounded-xl p-3.5 mb-2 hover:border-brand-300 transition-colors; }
+  .sc-tarjeta-pendiente__titulo { @apply text-[13px] font-semibold text-gray-800 mb-0.5; }
+  .sc-tarjeta-pendiente__detalle { @apply text-xs text-gray-500; }
+  .sc-tarjeta-pendiente__badge { @apply inline-block mt-1.5 text-[11px] font-bold text-brand-600 bg-brand-50 rounded px-1.5 py-0.5; }
+}
+
+/* ------------------------------------------------------------------ */
+/* Modales (infraestructura HTMX)                                      */
+/* ------------------------------------------------------------------ */
+@layer components {
+  .sc-modal-fondo { @apply fixed inset-0 bg-black/40 flex items-start justify-center pt-20 z-50; }
+  .sc-modal-caja { @apply bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4; }
+  .sc-modal-cabecera {
+    @apply flex items-center justify-between px-6 py-4 rounded-t-2xl text-white;
+    background: var(--color-brand-500);
+  }
+  .sc-modal-titulo { @apply text-base font-bold; }
+  .sc-modal-cerrar { @apply w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/20 cursor-pointer; }
+  .sc-modal-cuerpo { @apply px-6 py-5 max-h-[65vh] overflow-y-auto; }
+  .sc-modal-pie { @apply flex justify-end gap-2 px-6 py-4 border-t border-gray-100; }
+}

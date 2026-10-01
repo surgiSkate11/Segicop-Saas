@@ -28,7 +28,9 @@ class BandejaAntecedentesView(LoginRequiredMixin, ListView):
             VerificacionAntecedentes.objects.filter(
                 organizacion_id__in=organizaciones_ids,
                 estado__in=[EstadoVerificacion.CONTINGENCIA_MANUAL, EstadoVerificacion.EN_REVISION_MANUAL],
-            ).select_related("persona").order_by("created_at")
+            )
+            .select_related("persona")
+            .order_by("created_at")
         )
 
 
@@ -50,8 +52,9 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
 
     def _get_verificacion(self, pk):
         organizaciones_ids = _organizaciones_del_usuario(self.request.user)
-        return get_object_or_404(VerificacionAntecedentes.objects.select_related("persona"),
-                                  pk=pk, organizacion_id__in=organizaciones_ids)
+        return get_object_or_404(
+            VerificacionAntecedentes.objects.select_related("persona"), pk=pk, organizacion_id__in=organizaciones_ids
+        )
 
     def get(self, request, pk):
         verificacion = self._get_verificacion(pk)
@@ -83,9 +86,12 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
             messages.error(request, "Revisa el formulario: " + form.errors.as_text())
             return
         services.registrar_resultado_manual(
-            verificacion=verificacion, actor=request.user,
-            resultado=form.cleaned_data["resultado"], numero_certificado=form.cleaned_data["numero_certificado"],
-            proveedor=form.cleaned_data["proveedor"], comentario=form.cleaned_data["comentario"],
+            verificacion=verificacion,
+            actor=request.user,
+            resultado=form.cleaned_data["resultado"],
+            numero_certificado=form.cleaned_data["numero_certificado"],
+            proveedor=form.cleaned_data["proveedor"],
+            comentario=form.cleaned_data["comentario"],
         )
         messages.success(request, "Resultado cargado. Queda pendiente de validación.")
 
@@ -95,8 +101,10 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
             messages.error(request, "Revisa el formulario: " + form.errors.as_text())
             return
         services.validar_verificacion(
-            verificacion=verificacion, revisor=request.user,
-            decision=form.cleaned_data["decision"], comentario=form.cleaned_data["comentario"],
+            verificacion=verificacion,
+            revisor=request.user,
+            decision=form.cleaned_data["decision"],
+            comentario=form.cleaned_data["comentario"],
             vigente_hasta=form.cleaned_data["vigente_hasta"],
         )
         messages.success(request, "Decisión registrada.")

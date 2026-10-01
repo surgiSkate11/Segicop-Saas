@@ -12,9 +12,11 @@ class Organizacion(BaseModel):
     """
     Cliente o espacio lógico que aísla configuración y datos (tenant raíz).
     """
+
     nombre = models.CharField(max_length=255)
     identificador_legal = models.CharField(
-        max_length=50, blank=True,
+        max_length=50,
+        blank=True,
         help_text="RUC u otro identificador legal de la organización cliente.",
     )
     zona_horaria = models.CharField(max_length=50, default="America/Guayaquil")
@@ -32,9 +34,8 @@ class Instalacion(BaseModel):
     """
     Sitio donde se controla ingreso y trabajo (RF-040, RF-050, garita).
     """
-    organizacion = models.ForeignKey(
-        Organizacion, on_delete=models.PROTECT, related_name="instalaciones"
-    )
+
+    organizacion = models.ForeignKey(Organizacion, on_delete=models.PROTECT, related_name="instalaciones")
     nombre = models.CharField(max_length=255)
     direccion = models.CharField(max_length=255, blank=True)
     activa = models.BooleanField(default=True)
@@ -59,12 +60,12 @@ class Usuario(BaseModel, AbstractBaseUser, PermissionsMixin):
     un mismo usuario puede tener distintos roles en distintas
     organizaciones (ver RolAsignado).
     """
+
     email = models.EmailField(unique=True)
     nombre_completo = models.CharField(max_length=255)
     mfa_habilitado = models.BooleanField(
         default=False,
-        help_text="RF-001: obligatorio para perfiles administrativos y "
-        "revisores de información sensible.",
+        help_text="RF-001: obligatorio para perfiles administrativos y revisores de información sensible.",
     )
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
@@ -88,6 +89,7 @@ class Rol(BaseModel):
     porque el sistema debe soportar roles futuros. Los 7 roles iniciales
     se cargan por fixture (siguiente paso), no hardcodeados aquí.
     """
+
     codigo = models.SlugField(max_length=50, unique=True)
     nombre = models.CharField(max_length=100)
     descripcion = models.TextField(blank=True)
@@ -108,12 +110,14 @@ class RolAsignado(BaseModel):
     """
     Asignación de un rol a un usuario dentro de una organización.
     """
-    usuario = models.ForeignKey(
-        Usuario, on_delete=models.CASCADE, related_name="roles_asignados"
-    )
+
+    usuario = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name="roles_asignados")
     organizacion = models.ForeignKey(
-        Organizacion, on_delete=models.CASCADE, related_name="roles_asignados",
-        null=True, blank=True,
+        Organizacion,
+        on_delete=models.CASCADE,
+        related_name="roles_asignados",
+        null=True,
+        blank=True,
         help_text="Nulo únicamente cuando rol.es_rol_plataforma=True.",
     )
     rol = models.ForeignKey(Rol, on_delete=models.PROTECT, related_name="asignaciones")
@@ -141,12 +145,9 @@ class AlcanceAsignado(BaseModel):
     de apps futuras (empresas, cumplimiento). Sin filas aquí => el rol
     aplica a toda la organización.
     """
-    rol_asignado = models.ForeignKey(
-        RolAsignado, on_delete=models.CASCADE, related_name="alcances"
-    )
-    content_type = models.ForeignKey(
-        ContentType, on_delete=models.CASCADE, null=True, blank=True
-    )
+
+    rol_asignado = models.ForeignKey(RolAsignado, on_delete=models.CASCADE, related_name="alcances")
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE, null=True, blank=True)
     object_id = models.UUIDField(null=True, blank=True)
     recurso = GenericForeignKey("content_type", "object_id")
     notas = models.TextField(blank=True)

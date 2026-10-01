@@ -4,10 +4,14 @@ drf-spectacular>=0.27
 django-environ>=0.11
 django-htmx>=1.17
 psycopg[binary]>=3.1
+celery[redis]>=5.4,<6.0
+openpyxl>=3.1,<4.0
+django-otp>=1.5,<2.0
+opentelemetry-sdk>=1.45,<2.0
+opentelemetry-exporter-otlp>=1.45,<2.0
 
 # Se añaden en fases posteriores del roadmap, todavía no:
 # django-storages[s3]     -> Fase 5 (carga de documentos en `cumplimiento`)
-# celery / redis            -> Fase 5 (job de vencimientos, procesos async)
 # django-otp                -> endurecimiento (MFA)
 # django-fsm                -> Fase 6 (máquina de estados de antecedentes)
 # playwright                -> Fase 6 (conector asistido de antecedentes)

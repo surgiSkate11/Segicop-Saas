@@ -20,6 +20,7 @@ class PermisoIngreso(OrganizacionScopedModel):
     de solo LECTURA sobre Persona.estado y VerificacionAntecedentes;
     este modelo solo guarda el resultado de esa lectura.
     """
+
     persona = models.ForeignKey("personas.Persona", on_delete=models.CASCADE, related_name="permisos_ingreso")
     instalacion = models.ForeignKey("identidad.Instalacion", on_delete=models.PROTECT, related_name="permisos_ingreso")
     estado = models.CharField(max_length=20, choices=EstadoPermiso.choices, default=EstadoPermiso.SOLICITADO)
@@ -27,7 +28,9 @@ class PermisoIngreso(OrganizacionScopedModel):
     fecha_inicio_vigencia = models.DateField()
     fecha_fin_vigencia = models.DateField()
     codigo = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
-    aprobado_por = models.ForeignKey("identidad.Usuario", on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    aprobado_por = models.ForeignKey(
+        "identidad.Usuario", on_delete=models.PROTECT, null=True, blank=True, related_name="+"
+    )
 
     class Meta:
         verbose_name = "Permiso de ingreso"
@@ -40,6 +43,7 @@ class PermisoIngreso(OrganizacionScopedModel):
     @property
     def vigente_hoy(self) -> bool:
         from django.utils import timezone
+
         hoy = timezone.now().date()
         return self.fecha_inicio_vigencia <= hoy <= self.fecha_fin_vigencia
 
@@ -52,12 +56,17 @@ class TipoEvento(models.TextChoices):
 
 class EventoAcceso(BaseModel):
     """Solo-anexado: un intento denegado también se registra."""
-    permiso_ingreso = models.ForeignKey(PermisoIngreso, on_delete=models.PROTECT, null=True, blank=True, related_name="eventos")
+
+    permiso_ingreso = models.ForeignKey(
+        PermisoIngreso, on_delete=models.PROTECT, null=True, blank=True, related_name="eventos"
+    )
     persona = models.ForeignKey("personas.Persona", on_delete=models.PROTECT, related_name="eventos_acceso")
     instalacion = models.ForeignKey("identidad.Instalacion", on_delete=models.PROTECT, related_name="eventos_acceso")
     tipo = models.CharField(max_length=10, choices=TipoEvento.choices)
     motivo_denegacion = models.TextField(blank=True)
-    registrado_por = models.ForeignKey("identidad.Usuario", on_delete=models.PROTECT, related_name="eventos_registrados")
+    registrado_por = models.ForeignKey(
+        "identidad.Usuario", on_delete=models.PROTECT, related_name="eventos_registrados"
+    )
 
     class Meta:
         verbose_name = "Evento de acceso"

@@ -1,5 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
+from django_otp.plugins.otp_totp.models import TOTPDevice
 
 from apps.identidad.models import (
     AlcanceAsignado,
@@ -9,6 +10,13 @@ from apps.identidad.models import (
     RolAsignado,
     Usuario,
 )
+
+
+class TOTPDeviceInline(admin.TabularInline):
+    model = TOTPDevice
+    extra = 0
+    fields = ("name", "key", "step", "digits", "confirmed", "last_t")
+    readonly_fields = ("last_t",)
 
 
 @admin.register(Organizacion)
@@ -31,6 +39,7 @@ class UsuarioAdmin(DjangoUserAdmin):
     Adapta el UserAdmin estándar de Django al Usuario custom (email en
     vez de username).
     """
+
     ordering = ("email",)
     list_display = ("email", "nombre_completo", "is_active", "is_staff", "mfa_habilitado")
     search_fields = ("email", "nombre_completo")
@@ -41,8 +50,12 @@ class UsuarioAdmin(DjangoUserAdmin):
             "Permisos",
             {
                 "fields": (
-                    "is_active", "is_staff", "is_superuser",
-                    "mfa_habilitado", "groups", "user_permissions",
+                    "is_active",
+                    "is_staff",
+                    "is_superuser",
+                    "mfa_habilitado",
+                    "groups",
+                    "user_permissions",
                 )
             },
         ),
@@ -56,6 +69,7 @@ class UsuarioAdmin(DjangoUserAdmin):
             },
         ),
     )
+    inlines = [TOTPDeviceInline]
 
 
 @admin.register(Rol)

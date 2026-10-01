@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block titulo %}Catálogo de requisitos · SIGECOP{% endblock %}
+{% block nav_documentos %}activo{% endblock %}
+{% block migas %}
+  <a href="{% url 'cumplimiento:bandeja' %}">Documentos</a> <span class="sc-migas__sep">/</span>
+  <strong>Catálogo</strong>
+{% endblock %}
+
+{% block contenido %}
+  <div class="sc-cabecera-lista">
+    <div>
+      <p class="sc-etiqueta-seccion">Documentos</p>
+      <h1>Catálogo de requisitos</h1>
+      <p class="sc-subtitulo !mb-0">Los requisitos que tu organización exige a empresas y personas.</p>
+    </div>
+    <button type="button" class="sc-boton-primario"
+            hx-get="{% url 'cumplimiento:catalogo_nuevo' %}" hx-target="#sc-modal" hx-swap="innerHTML">
+      + Nuevo requisito
+    </button>
+  </div>
+
+  {% if catalogo %}
+    <div class="sc-tabla-envoltorio">
+      <table class="sc-tabla">
+        <thead>
+          <tr><th>Nombre</th><th>Aplica a</th><th>Obligatorio</th><th>Vigencia</th><th class="text-right">Acciones</th></tr>
+        </thead>
+        <tbody>
+          {% for requisito in catalogo %}
+            <tr>
+              <td>{{ requisito.nombre }}</td>
+              <td>{{ requisito.get_aplica_a_display }}</td>
+              <td>{{ requisito.obligatorio|yesno:"Sí,No" }}</td>
+              <td>{{ requisito.vigencia_dias|default:"Sin vencimiento" }}</td>
+              <td class="text-right">
+                <button type="button" class="sc-boton-secundario"
+                        hx-get="{% url 'cumplimiento:catalogo_asignar' requisito.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
+                  Asignar
+                </button>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="sc-vacio">
+      <p>Todavía no hay requisitos en el catálogo.</p>
+      <p class="sc-vacio__ayuda">Usa "Nuevo requisito" para crear el primero (ej. "RUC vigente").</p>
+    </div>
+  {% endif %}
+{% endblock %}

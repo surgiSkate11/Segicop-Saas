@@ -17,6 +17,7 @@ class Persona(OrganizacionScopedModel):
     con el resultado de antecedentes ni con la habilitación final
     (RN-007), esos viven en apps futuras que solo leerán este campo.
     """
+
     tipo_documento = models.CharField(max_length=20, choices=TipoDocumento.choices)
     numero_documento = models.CharField(max_length=30)
     nombres = models.CharField(max_length=150)
@@ -47,9 +48,12 @@ class Persona(OrganizacionScopedModel):
 
 class Asignacion(OrganizacionScopedModel):
     """Vincula Persona <-> EmpresaContratista (y opcionalmente Contrato)."""
+
     persona = models.ForeignKey(Persona, on_delete=models.CASCADE, related_name="asignaciones")
     empresa = models.ForeignKey("empresas.EmpresaContratista", on_delete=models.PROTECT, related_name="asignaciones")
-    contrato = models.ForeignKey("empresas.Contrato", on_delete=models.PROTECT, related_name="asignaciones", null=True, blank=True)
+    contrato = models.ForeignKey(
+        "empresas.Contrato", on_delete=models.PROTECT, related_name="asignaciones", null=True, blank=True
+    )
     cargo_o_actividad = models.CharField(max_length=150)
     fecha_inicio = models.DateField()
     fecha_fin = models.DateField(null=True, blank=True)
