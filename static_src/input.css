@@ -4,6 +4,48 @@
    así que le indicamos a Tailwind v4 explícitamente dónde buscar clases. */
 @source "../templates";
 
+:root {
+  color-scheme: light;
+  --sc-bg: #f3f5f7;
+  --sc-surface: #ffffff;
+  --sc-surface-muted: #f8f9fb;
+  --sc-border: #e2e8f0;
+  --sc-border-strong: #cbd5e1;
+  --sc-text: #172033;
+  --sc-text-muted: #64748b;
+  --sc-text-faint: #94a3b8;
+  --sc-primary: #c94f20;
+  --sc-primary-hover: #a33e19;
+  --sc-focus: #f17b3f;
+  --sc-sidebar: #b9471d;
+  --sc-sidebar-muted: #ffe1d1;
+  --sc-sidebar-hover: #f3bd68;
+  --sc-sidebar-active: #e8622c;
+  --sc-shadow: 0 12px 30px rgba(23, 32, 51, 0.07);
+  --sc-shadow-hover: 0 16px 34px rgba(23, 32, 51, 0.12);
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --sc-bg: #0e1723;
+  --sc-surface: #162333;
+  --sc-surface-muted: #1b2b3d;
+  --sc-border: #2c4054;
+  --sc-border-strong: #40566c;
+  --sc-text: #e8eef5;
+  --sc-text-muted: #aebdca;
+  --sc-text-faint: #7f94a8;
+  --sc-primary: #ff9f66;
+  --sc-primary-hover: #ffb47e;
+  --sc-focus: #ff9f66;
+  --sc-sidebar: #3b211a;
+  --sc-sidebar-muted: #ffd0b8;
+  --sc-sidebar-hover: #8a4d27;
+  --sc-sidebar-active: #e8622c;
+  --sc-shadow: 0 16px 34px rgba(0, 0, 0, 0.24);
+  --sc-shadow-hover: 0 18px 40px rgba(0, 0, 0, 0.32);
+}
+
 /* ------------------------------------------------------------------ */
 /* Tokens de marca: quedan disponibles como utilidades normales        */
 /* (bg-brand-600, text-brand-700, border-brand-200, etc.)              */
@@ -28,41 +70,54 @@
 /* ------------------------------------------------------------------ */
 @layer components {
   /* ---------- Layout general ---------- */
+  .sc-app-shell { @apply min-h-screen; background: radial-gradient(circle at 92% 0%, color-mix(in srgb, var(--color-brand-100) 28%, transparent) 0, transparent 32rem), var(--sc-bg); color: var(--sc-text); }
   .sc-main   { @apply flex-1 flex flex-col min-w-0; }
   .sc-cuerpo { @apply flex flex-1 min-h-0 overflow-auto; }
   .sc-contenido { @apply flex-1 px-10 py-9 min-w-0; }
-  .sc-contenido h1 { @apply text-2xl font-bold text-blue-800 tracking-tight mb-1; }
-  .sc-subtitulo { @apply text-sm text-gray-500 mb-7; }
-  .sc-etiqueta-seccion { @apply text-xs font-bold uppercase tracking-wider text-brand-600 mb-1; }
+  .sc-contenido h1 { @apply text-2xl font-extrabold tracking-tight mb-1; color: var(--sc-text); }
+  .sc-subtitulo { @apply text-sm mb-7; color: var(--sc-text-muted); }
+  .sc-etiqueta-seccion { @apply text-xs font-bold uppercase tracking-wider mb-1; color: var(--color-brand-600); }
   .sc-cabecera-lista { @apply flex items-center justify-between mb-6; }
+  .sc-seccion-cabecera { @apply flex items-end justify-between mt-8 mb-3; }
+  .sc-seccion-cabecera h2 { @apply text-lg font-extrabold; color: var(--sc-text); }
+  .sc-enlace-control { @apply text-sm font-bold no-underline; color: var(--sc-primary); }
+  .sc-enlace-control:hover { text-decoration: underline; }
+  .sc-texto-muted { @apply text-xs; color: var(--sc-text-muted); }
 
   /* ---------- Sidebar ---------- */
   .sc-sidebar {
-    @apply w-44 shrink-0 flex flex-col items-center pt-6 pb-4 text-white;
-    background: linear-gradient(165deg, var(--color-brand-600) 0%, var(--color-brand-500) 55%, var(--color-brand-400) 100%);
+    @apply w-60 shrink-0 flex flex-col pt-6 pb-4 text-white transition-all duration-200;
+    background: linear-gradient(165deg, var(--sc-sidebar) 0%, color-mix(in srgb, var(--sc-sidebar) 82%, #241b25) 100%);
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 8px 0 28px rgba(28, 20, 25, 0.08);
   }
-  .sc-marca { @apply flex flex-col items-center gap-1 mb-6 px-3 text-center; }
-  .sc-marca__icono { @apply w-11 h-11 rounded-xl bg-white/20 flex items-center justify-center; }
+  .sc-marca { @apply flex items-center gap-3 mb-8 px-5 text-left; }
+  .sc-marca__icono { @apply w-10 h-10 rounded-xl flex items-center justify-center shrink-0; background: var(--color-brand-500); }
   .sc-marca__icono svg { @apply w-6 h-6; }
   .sc-marca__nombre { @apply text-base font-extrabold tracking-tight; }
-  .sc-marca__lema { @apply text-[10px] text-white/75 leading-tight; }
+  .sc-marca__lema { @apply text-[10px] leading-tight; color: var(--sc-sidebar-muted); }
 
   .sc-espacio-trabajo { @apply hidden; }
 
-  .sc-nav-seccion { @apply text-[10px] font-bold uppercase tracking-wider text-white/55 mt-4 mb-1.5 first:mt-1; }
-  .sc-nav { @apply flex flex-col items-center gap-1 w-full px-2; }
+  .sc-nav-seccion { @apply text-[10px] font-bold uppercase tracking-wider mt-4 mb-1.5 px-5; color: var(--sc-sidebar-muted); }
+  .sc-nav { @apply flex flex-col gap-1 w-full px-3; }
   .sc-nav-item {
-    @apply w-full flex flex-col items-center gap-1 px-1 py-2.5 rounded-lg text-white/80 text-[11px] font-medium
-           text-center leading-tight no-underline transition-colors duration-150;
+    @apply w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-semibold
+           leading-tight no-underline transition-colors duration-150;
+    color: var(--sc-sidebar-muted);
   }
-  .sc-nav-item svg { @apply w-5 h-5 stroke-[1.75]; }
-  .sc-nav-item:hover { @apply bg-black/10 text-white; }
-  .sc-nav-item.activo { @apply bg-white/20 text-white font-semibold; }
-  .sc-nav-item.deshabilitado { @apply text-white/35 cursor-default; }
-  .sc-nav-item.deshabilitado:hover { @apply bg-transparent text-white/35; }
+  .sc-nav-item svg { @apply w-5 h-5 shrink-0 stroke-[1.75]; }
+  .sc-nav-label { @apply min-w-0 truncate; }
+  .sc-nav-item:hover { color: #4c2515; background: var(--sc-sidebar-hover); transform: translateX(2px); }
+  html[data-theme="dark"] .sc-nav-item:hover { color: #fff1e8; }
+  .sc-nav-item.activo { color: white; background: var(--sc-sidebar-active); box-shadow: inset 3px 0 0 var(--color-brand-300), 0 8px 18px rgba(20, 12, 8, 0.16); }
+  .sc-nav-item--sub { @apply ml-3 w-[calc(100%-0.75rem)] text-[13px] font-medium; color: var(--sc-sidebar-muted); }
+  .sc-nav-item--sub svg { @apply w-4 h-4; }
+  .sc-nav-item.deshabilitado { color: rgba(255, 255, 255, 0.35); @apply cursor-default; }
+  .sc-nav-item.deshabilitado:hover { background: transparent; }
 
-  .sc-sidebar-pie { @apply mt-auto w-full px-3 pt-4 border-t border-white/20; }
-  .sc-sidebar-pie__estado { @apply flex items-center gap-1.5 text-[11px] text-white/75 mb-3; }
+  .sc-sidebar-pie { @apply mt-auto w-full px-5 pt-4 border-t border-white/10; }
+  .sc-sidebar-pie__estado { @apply flex items-center gap-1.5 text-[11px] mb-3; color: var(--sc-sidebar-muted); }
   .sc-perfil-mini { @apply flex items-center gap-2; }
   .sc-perfil-mini__avatar { @apply w-8 h-8 rounded-full bg-white text-brand-700 flex items-center justify-center font-bold text-xs shrink-0; }
   .sc-perfil-mini__nombre { @apply text-xs font-semibold leading-tight; }
@@ -71,34 +126,48 @@
   .sc-punto-activo { @apply inline-block w-1.5 h-1.5 rounded-full bg-emerald-400; }
 
   /* ---------- Topbar ---------- */
-  .sc-topbar { @apply h-16 shrink-0 flex items-center gap-4 px-8 bg-white border-b border-gray-200; }
-  .sc-migas { @apply flex items-center gap-1.5 text-sm text-gray-400; }
-  .sc-migas strong { @apply text-gray-700 font-semibold; }
-  .sc-migas a { @apply text-gray-400 no-underline hover:text-brand-600; }
-  .sc-migas__sep { @apply text-gray-300; }
+  .sc-topbar { @apply h-16 shrink-0 flex items-center justify-between gap-4 px-8 border-b; background: color-mix(in srgb, var(--sc-surface) 92%, transparent); border-color: var(--sc-border); backdrop-filter: blur(14px); }
+  .sc-topbar-izquierda { @apply flex items-center gap-4 min-w-0; }
+  .sc-migas { @apply flex items-center gap-1.5 text-sm truncate; color: var(--sc-text-muted); }
+  .sc-migas strong { @apply font-bold; color: var(--sc-text); }
+  .sc-migas a { @apply no-underline; color: var(--sc-text-muted); }
+  .sc-migas a:hover { color: var(--sc-primary); }
+  .sc-migas__sep { color: var(--sc-text-faint); }
 
-  .sc-topbar-derecha { @apply ml-auto flex items-center gap-4; }
+  .sc-topbar-derecha { @apply flex items-center gap-3; }
+  .sc-organizacion-actual, .sc-saludo { color: var(--sc-text-muted); }
+  .sc-saludo { @apply text-sm font-semibold; }
+  .sc-avatar { @apply w-9 h-9 rounded-full flex items-center justify-center font-bold text-sm; background: var(--color-brand-100); color: var(--color-brand-700); }
+  .sc-icono-sol { display: block; }
+  .sc-icono-luna { display: none; }
+  html[data-theme="dark"] .sc-icono-sol { display: none; }
+  html[data-theme="dark"] .sc-icono-luna { display: block; }
   .sc-buscador {
     @apply hidden md:flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2
-           w-56 text-gray-400 text-sm;
+              w-56 text-sm;
+            background: var(--sc-surface-muted); color: var(--sc-text-muted); border-color: var(--sc-border);
   }
   .sc-buscador svg { @apply w-4 h-4 shrink-0; }
   .sc-icono-boton {
-    @apply w-9 h-9 rounded-lg flex items-center justify-center bg-white border border-gray-200
-           text-gray-400 hover:text-brand-600 hover:border-brand-300 transition-colors cursor-pointer;
+    @apply w-9 h-9 rounded-lg flex items-center justify-center border transition-colors cursor-pointer;
+    background: var(--sc-surface); border-color: var(--sc-border); color: var(--sc-text-muted);
   }
+  .sc-icono-boton:hover { color: var(--sc-primary); border-color: var(--sc-focus); }
   .sc-icono-boton svg { @apply w-4 h-4; }
   .sc-icono-denegado { @apply !bg-red-50 !text-red-600; }
 
   /* ---------- Tarjetas de estadística ---------- */
   .sc-grilla-stats { @apply grid gap-4 mb-7; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
   .sc-tarjeta-stat {
-    @apply bg-white border border-gray-200 rounded-xl p-5 shadow-sm flex items-start justify-between;
+    @apply border rounded-xl p-5 flex items-start justify-between;
+    background: var(--sc-surface); border-color: var(--sc-border); box-shadow: var(--sc-shadow);
     border-top: 3px solid var(--sc-stat-color, var(--color-brand-500));
+    transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
   }
+  .sc-tarjeta-stat:hover { transform: translateY(-3px); box-shadow: var(--sc-shadow-hover); border-color: var(--sc-border-strong); }
   .sc-tarjeta-stat__texto { @apply flex flex-col gap-2; }
-  .sc-tarjeta-stat__titulo { @apply text-xs font-semibold text-gray-500; }
-  .sc-tarjeta-stat__valor { @apply text-2xl font-extrabold text-gray-800 tracking-tight; }
+  .sc-tarjeta-stat__titulo { @apply text-xs font-semibold; color: var(--sc-text-muted); }
+  .sc-tarjeta-stat__valor { @apply text-2xl font-extrabold tracking-tight; color: var(--sc-text); }
   .sc-tarjeta-stat__icono {
     @apply w-9 h-9 rounded-lg flex items-center justify-center shrink-0;
     background: var(--sc-stat-fondo-icono, var(--color-brand-50));
@@ -106,15 +175,16 @@
   }
   .sc-tarjeta-stat__icono svg { @apply w-4.5 h-4.5; }
   .sc-tarjeta-stat--verde { --sc-stat-color: #0D9488; --sc-stat-fondo-icono: #CCFBF1; }
-  .sc-tarjeta-stat--azul  { --sc-stat-color: #1D4ED8; --sc-stat-fondo-icono: #DBEAFE; }
+  .sc-tarjeta-stat--azul  { --sc-stat-color: #d65a28; --sc-stat-fondo-icono: #fff0e8; }
+  .sc-tarjeta-stat--marca { --sc-stat-color: var(--color-brand-500); --sc-stat-fondo-icono: var(--color-brand-50); }
 
   /* ---------- Banner ---------- */
-  .sc-banner { @apply flex items-center gap-4 bg-white border border-gray-200 rounded-xl p-5 mb-7 shadow-sm; }
-  .sc-banner__icono { @apply w-10 h-10 rounded-lg shrink-0 flex items-center justify-center bg-blue-50 text-blue-700; }
+  .sc-banner { @apply flex items-center gap-4 border rounded-xl p-5 mb-7; background: var(--sc-surface); border-color: var(--sc-border); box-shadow: var(--sc-shadow); }
+  .sc-banner__icono { @apply w-10 h-10 rounded-lg shrink-0 flex items-center justify-center; background: var(--color-brand-50); color: var(--color-brand-700); }
   .sc-banner__icono svg { @apply w-5 h-5; }
   .sc-banner__icono--verde { @apply bg-teal-50 text-teal-600; }
-  .sc-banner__titulo { @apply text-sm font-bold text-gray-800 mb-0.5; }
-  .sc-banner__detalle { @apply text-[13px] text-gray-500; }
+  .sc-banner__titulo { @apply text-sm font-bold mb-0.5; color: var(--sc-text); }
+  .sc-banner__detalle { @apply text-[13px]; color: var(--sc-text-muted); }
 
   /* ---------- Mensajes ---------- */
   .sc-errores { @apply list-none m-0 mb-4 px-3.5 py-2.5 bg-red-50 text-red-700 rounded-lg text-sm; }
@@ -124,21 +194,27 @@
   .mensaje--success { @apply bg-emerald-50 text-emerald-700; }
 
   /* ---------- Estado vacío ---------- */
-  .sc-vacio { @apply border border-dashed border-gray-300 rounded-xl p-7 bg-gray-50; }
-  .sc-vacio p { @apply text-sm text-gray-500 mb-1.5; }
+  .sc-vacio { @apply border border-dashed rounded-xl p-7; background: var(--sc-surface-muted); border-color: var(--sc-border-strong); }
+  .sc-vacio p { @apply text-sm mb-1.5; color: var(--sc-text-muted); }
   .sc-vacio__ayuda { @apply text-sm; }
 
   /* ---------- Tablas de datos ---------- */
-  .sc-tabla-envoltorio { @apply bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm; }
+  .sc-tabla-envoltorio { @apply border rounded-xl overflow-x-auto; background: var(--sc-surface); border-color: var(--sc-border); box-shadow: var(--sc-shadow); }
+  .sc-tabla-meta { @apply flex items-center justify-between px-1 pb-2 text-xs font-semibold; color: var(--sc-text-muted); }
+  .sc-tabla-meta__hint { color: var(--sc-text-faint); }
+  .sc-tabla-acciones { @apply flex flex-wrap justify-end gap-1.5; }
+  .sc-boton-compacto { @apply px-2.5 py-1.5 text-xs; }
+  .sc-dato-mono { @apply font-mono text-xs; color: var(--sc-text-muted); }
+  .sc-contador { @apply inline-flex items-center justify-center min-w-7 h-7 rounded-full text-xs font-bold; background: var(--sc-surface-muted); color: var(--sc-primary); }
   .sc-tabla { @apply w-full border-collapse; }
   .sc-tabla thead th {
     @apply text-left text-[11px] font-bold uppercase tracking-wide text-white px-4 py-3;
-    background: var(--color-brand-500);
+    background: var(--sc-sidebar-active);
   }
-  .sc-tabla tbody td { @apply px-4 py-3.5 text-sm text-gray-700 border-b border-gray-100; }
+  .sc-tabla tbody td { @apply px-4 py-3.5 text-sm border-b; color: var(--sc-text); border-color: var(--sc-border); }
   .sc-tabla tbody tr:last-child td { @apply border-b-0; }
-  .sc-tabla tbody tr:hover { @apply bg-brand-50/60; }
-  .sc-tabla a { @apply text-blue-700 font-semibold no-underline hover:underline; }
+  .sc-tabla tbody tr:hover { background: color-mix(in srgb, var(--color-brand-50) 40%, transparent); }
+  .sc-tabla a { @apply font-semibold no-underline hover:underline; color: var(--sc-primary); }
 
   /* ---------- Chips de estado ---------- */
   .sc-estado { @apply inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full; }
@@ -162,41 +238,52 @@
 
   /* ---------- Botones ---------- */
   .sc-boton-primario {
-    @apply inline-flex items-center gap-1.5 bg-blue-800 hover:bg-blue-900 text-white text-sm font-semibold
-           px-4 py-2.5 rounded-lg transition-colors cursor-pointer border-0 no-underline;
+    @apply inline-flex items-center gap-1.5 text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors cursor-pointer border-0 no-underline;
+    background: var(--sc-primary);
+    box-shadow: 0 5px 12px color-mix(in srgb, var(--sc-primary) 22%, transparent);
   }
+  .sc-boton-primario:hover, .sc-boton:hover { background: var(--sc-primary-hover); }
   .sc-boton-secundario {
-    @apply inline-flex items-center gap-1.5 bg-white hover:border-brand-400 hover:text-brand-600 text-gray-700
-           text-sm font-semibold px-3.5 py-2 rounded-lg border border-gray-200 transition-colors cursor-pointer no-underline;
+    @apply inline-flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg border transition-colors cursor-pointer no-underline;
+    background: var(--sc-surface); color: var(--sc-text); border-color: var(--sc-border);
   }
+  .sc-boton-secundario:hover { border-color: var(--sc-focus); color: var(--sc-primary); }
   .sc-boton {
-    @apply w-full mt-1.5 inline-flex items-center justify-center gap-1.5 bg-blue-800 hover:bg-blue-900
-           text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors cursor-pointer border-0;
+    @apply w-full mt-1.5 inline-flex items-center justify-center gap-1.5 text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors cursor-pointer border-0;
+    background: var(--sc-primary);
   }
 
   /* ---------- Formularios ---------- */
   .sc-campo { @apply mb-3.5; }
-  .sc-campo label { @apply block text-xs font-semibold text-gray-600 mb-1.5; }
+  .sc-campo label { @apply block text-xs font-semibold mb-1.5; color: var(--sc-text-muted); }
   .sc-input {
-    @apply w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-800
-           focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-brand-400;
+    @apply w-full rounded-lg px-3 py-2 text-sm focus:outline-none transition-colors;
+    background: var(--sc-surface); color: var(--sc-text); border: 1px solid var(--sc-border-strong);
   }
+  .sc-input:focus { border-color: var(--sc-focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--sc-focus) 20%, transparent); }
+
+  :where(button, a, input, select, textarea):focus-visible { outline: 3px solid color-mix(in srgb, var(--sc-focus) 45%, transparent); outline-offset: 2px; }
 
   /* ---------- Login ---------- */
-  .sc-login { @apply w-[380px] bg-white border border-gray-200 rounded-2xl shadow-xl p-10; }
+  .sc-login-page { @apply relative flex items-center justify-center p-6; background: var(--sc-bg); }
+  .sc-login-page__marca { @apply absolute top-7 left-7 flex items-center gap-3 text-sm font-extrabold tracking-wide; color: var(--sc-text); }
+  .sc-login-page__marca .sc-marca__icono { @apply w-10 h-10; }
+  .sc-login-page__marca .sc-marca__icono svg { @apply w-5 h-5; }
+  .sc-login-page__tema { @apply absolute top-7 right-7; }
+  .sc-login { @apply w-full max-w-[420px] rounded-2xl p-10; background: var(--sc-surface); border: 1px solid var(--sc-border); box-shadow: var(--sc-shadow); }
   .sc-login__logo {
     @apply w-11 h-11 rounded-xl flex items-center justify-center mx-auto mb-5;
     background: linear-gradient(160deg, var(--color-brand-600), var(--color-brand-400));
   }
-  .sc-login h1 { @apply text-center text-lg font-extrabold tracking-tight text-gray-800 mb-1; }
+  .sc-login h1 { @apply text-center text-lg font-extrabold tracking-tight mb-1; color: var(--sc-text); }
   .sc-login .sc-subtitulo { @apply text-center mb-7; }
 
   /* ---------- Panel lateral ---------- */
-  .sc-panel-lateral { @apply w-72 shrink-0 px-6 py-9 border-l border-gray-200 bg-white; }
-  .sc-panel-lateral h2 { @apply text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-4; }
-  .sc-tarjeta-pendiente { @apply bg-gray-50 border border-gray-200 rounded-xl p-3.5 mb-2 hover:border-brand-300 transition-colors; }
-  .sc-tarjeta-pendiente__titulo { @apply text-[13px] font-semibold text-gray-800 mb-0.5; }
-  .sc-tarjeta-pendiente__detalle { @apply text-xs text-gray-500; }
+  .sc-panel-lateral { @apply w-72 shrink-0 px-6 py-9 border-l; background: var(--sc-surface); border-color: var(--sc-border); }
+  .sc-panel-lateral h2 { @apply text-[11px] font-bold uppercase tracking-wider mb-4; color: var(--sc-text-faint); }
+  .sc-tarjeta-pendiente { @apply border rounded-xl p-3.5 mb-2 hover:border-brand-300 transition-colors; background: var(--sc-surface-muted); border-color: var(--sc-border); }
+  .sc-tarjeta-pendiente__titulo { @apply text-[13px] font-semibold mb-0.5; color: var(--sc-text); }
+  .sc-tarjeta-pendiente__detalle { @apply text-xs; color: var(--sc-text-muted); }
   .sc-tarjeta-pendiente__badge { @apply inline-block mt-1.5 text-[11px] font-bold text-brand-600 bg-brand-50 rounded px-1.5 py-0.5; }
 }
 
@@ -204,14 +291,52 @@
 /* Modales (infraestructura HTMX)                                      */
 /* ------------------------------------------------------------------ */
 @layer components {
-  .sc-modal-fondo { @apply fixed inset-0 bg-black/40 flex items-start justify-center pt-20 z-50; }
-  .sc-modal-caja { @apply bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4; }
+  .sc-modal-fondo { @apply fixed inset-0 flex items-start justify-center pt-20 z-50; background: rgba(5, 15, 25, 0.62); backdrop-filter: blur(4px); }
+  .sc-modal-caja { @apply rounded-2xl w-full max-w-lg mx-4; background: var(--sc-surface); box-shadow: var(--sc-shadow); }
   .sc-modal-cabecera {
     @apply flex items-center justify-between px-6 py-4 rounded-t-2xl text-white;
     background: var(--color-brand-500);
   }
   .sc-modal-titulo { @apply text-base font-bold; }
   .sc-modal-cerrar { @apply w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/20 cursor-pointer; }
-  .sc-modal-cuerpo { @apply px-6 py-5 max-h-[65vh] overflow-y-auto; }
-  .sc-modal-pie { @apply flex justify-end gap-2 px-6 py-4 border-t border-gray-100; }
+  .sc-modal-cuerpo { @apply px-6 py-5 max-h-[65vh] overflow-y-auto; color: var(--sc-text); }
+  .sc-modal-pie { @apply flex justify-end gap-2 px-6 py-4 border-t; border-color: var(--sc-border); }
+}
+
+html[data-theme="dark"] .sc-login,
+html[data-theme="dark"] .sc-panel-lateral,
+html[data-theme="dark"] .sc-modal-caja { color: var(--sc-text); }
+
+@media (max-width: 900px) {
+  .sc-sidebar { @apply fixed inset-y-0 left-0 z-40 -translate-x-full; }
+  .sc-app-shell:not(.sc-sidebar-collapsed) .sc-sidebar { @apply translate-x-0; }
+  .sc-contenido { @apply px-5 py-6; }
+  .sc-topbar { @apply px-5; }
+  .sc-sidebar-collapsed .sc-sidebar { @apply -translate-x-full; }
+  .sc-panel-lateral { @apply hidden; }
+  .sc-contenido h1 { @apply text-xl; }
+  .sc-topbar-derecha { @apply gap-2; }
+}
+
+@media (max-width: 640px) {
+  .sc-contenido { @apply px-4 py-5; }
+  .sc-topbar { @apply h-14 px-4; }
+  .sc-cabecera-lista { @apply items-start gap-3; }
+  .sc-grilla-stats { @apply grid-cols-2 gap-3; }
+  .sc-tarjeta-stat { @apply p-4; }
+  .sc-tarjeta-stat__valor { @apply text-xl; }
+  .mensajes { @apply px-4 pt-3; }
+}
+
+@media (min-width: 901px) {
+  .sc-sidebar-collapsed .sc-sidebar { @apply w-[4.5rem]; }
+  .sc-sidebar-collapsed .sc-marca { @apply justify-center px-2; }
+  .sc-sidebar-collapsed .sc-marca__nombre,
+  .sc-sidebar-collapsed .sc-marca__lema,
+  .sc-sidebar-collapsed .sc-nav-label,
+  .sc-sidebar-collapsed .sc-nav-seccion,
+  .sc-sidebar-collapsed .sc-sidebar-pie__estado { @apply hidden; }
+  .sc-sidebar-collapsed .sc-nav { @apply px-2; }
+  .sc-sidebar-collapsed .sc-nav-item { @apply justify-center gap-0 px-2; }
+  .sc-sidebar-collapsed .sc-nav-item--sub { @apply ml-0 w-full; }
 }

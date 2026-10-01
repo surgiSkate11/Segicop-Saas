@@ -9,15 +9,16 @@
     <div>
       <p class="sc-etiqueta-seccion">Empresas</p>
       <h1>Empresas contratistas</h1>
-      <p class="sc-subtitulo !mb-0">{{ empresas|length }} empresa(s) registrada(s).</p>
+      <p class="sc-subtitulo !mb-0">Gestiona contratistas, contratos y habilitación documental.</p>
     </div>
     <button type="button" class="sc-boton-primario"
             hx-get="{% url 'empresas:crear' %}" hx-target="#sc-modal" hx-swap="innerHTML">
-      + Nueva empresa
+      <span aria-hidden="true">+</span> Nueva empresa
     </button>
   </div>
 
   {% if empresas %}
+    <div class="sc-tabla-meta"><span>{{ empresas|length }} empresas visibles</span><span class="sc-tabla-meta__hint">Ordenadas por razón social</span></div>
     <div class="sc-tabla-envoltorio">
       <table class="sc-tabla">
         <thead>
@@ -37,16 +38,18 @@
                   {{ empresa.razon_social }}
                 </a>
               </td>
-              <td>{{ empresa.ruc }}</td>
+              <td><span class="sc-dato-mono">{{ empresa.ruc }}</span></td>
               <td>
                 <span class="sc-estado sc-estado--{{ empresa.estado|lower }}">{{ empresa.get_estado_display }}</span>
               </td>
-              <td>{{ empresa.contratos.count }}</td>
+              <td><span class="sc-contador">{{ empresa.contratos.count }}</span></td>
               <td class="text-right">
-                <button type="button" class="sc-boton-secundario"
+                <div class="sc-tabla-acciones">
+                <button type="button" class="sc-boton-secundario sc-boton-compacto"
                         hx-get="{% url 'trabajos:crear' empresa.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
-                  Nuevo permiso de trabajo
+                  <span aria-hidden="true">+</span> Trabajo
                 </button>
+                </div>
               </td>
             </tr>
           {% endfor %}
@@ -55,7 +58,7 @@
     </div>
   {% else %}
     <div class="sc-vacio">
-      <p>Todavía no hay empresas registradas en tu organización.</p>
+      <p>No hay empresas registradas en tu organización.</p>
       <p class="sc-vacio__ayuda">Usa "Nueva empresa" para dar de alta la primera.</p>
     </div>
   {% endif %}

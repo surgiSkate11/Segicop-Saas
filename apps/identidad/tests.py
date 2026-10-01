@@ -1,4 +1,5 @@
 from django.test import TestCase
+from django.urls import reverse
 from django_otp import oath
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
@@ -49,3 +50,28 @@ class MFATests(TestCase):
         )
 
         self.assertFalse(formulario.is_valid())
+
+
+class LogoutTests(TestCase):
+    def setUp(self):
+        self.usuario = Usuario.objects.create_user(
+            email="logout@example.com",
+            nombre_completo="Usuario Logout",
+            password="UnaClaveSegura123!",
+        )
+
+    def test_logout_requiere_post(self):
+        self.client.force_login(self.usuario)
+
+        respuesta = self.client.get(reverse("identidad:logout"))
+
+        self.assertEqual(respuesta.status_code, 405)
+        self.assertTrue(self.client.session.get("_auth_user_id"))
+
+    def test_logout_por_post_cierra_la_sesion(self):
+        self.client.force_login(self.usuario)
+
+        respuesta = self.client.post(reverse("identidad:logout"))
+
+        self.assertRedirects(respuesta, reverse("identidad:login"))
+        self.assertNotIn("_auth_user_id", self.client.session)

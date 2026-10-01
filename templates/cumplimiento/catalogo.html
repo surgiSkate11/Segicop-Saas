@@ -16,11 +16,12 @@
     </div>
     <button type="button" class="sc-boton-primario"
             hx-get="{% url 'cumplimiento:catalogo_nuevo' %}" hx-target="#sc-modal" hx-swap="innerHTML">
-      + Nuevo requisito
+      <span aria-hidden="true">+</span> Nuevo requisito
     </button>
   </div>
 
   {% if catalogo %}
+    <div class="sc-tabla-meta"><span>{{ catalogo|length }} requisitos visibles</span><span class="sc-tabla-meta__hint">Reglas documentales de la organización</span></div>
     <div class="sc-tabla-envoltorio">
       <table class="sc-tabla">
         <thead>
@@ -31,10 +32,10 @@
             <tr>
               <td>{{ requisito.nombre }}</td>
               <td>{{ requisito.get_aplica_a_display }}</td>
-              <td>{{ requisito.obligatorio|yesno:"Sí,No" }}</td>
+              <td><span class="sc-estado sc-estado--{% if requisito.obligatorio %}aprobado{% else %}borrador{% endif %}">{{ requisito.obligatorio|yesno:"Obligatorio,Opcional" }}</span></td>
               <td>{{ requisito.vigencia_dias|default:"Sin vencimiento" }}</td>
               <td class="text-right">
-                <button type="button" class="sc-boton-secundario"
+                <button type="button" class="sc-boton-secundario sc-boton-compacto"
                         hx-get="{% url 'cumplimiento:catalogo_asignar' requisito.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
                   Asignar
                 </button>

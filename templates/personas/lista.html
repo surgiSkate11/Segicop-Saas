@@ -9,15 +9,16 @@
     <div>
       <p class="sc-etiqueta-seccion">Personas</p>
       <h1>Personas</h1>
-      <p class="sc-subtitulo !mb-0">{{ personas|length }} persona(s) registrada(s).</p>
+      <p class="sc-subtitulo !mb-0">Gestiona identidades, asignaciones, antecedentes y accesos.</p>
     </div>
     <button type="button" class="sc-boton-primario"
             hx-get="{% url 'personas:crear' %}" hx-target="#sc-modal" hx-swap="innerHTML">
-      + Nueva persona
+      <span aria-hidden="true">+</span> Nueva persona
     </button>
   </div>
 
   {% if personas %}
+    <div class="sc-tabla-meta"><span>{{ personas|length }} personas visibles</span><span class="sc-tabla-meta__hint">Ordenadas por apellido</span></div>
     <div class="sc-tabla-envoltorio">
       <table class="sc-tabla">
         <thead>
@@ -31,28 +32,28 @@
                   {{ persona.nombre_completo }}
                 </a>
               </td>
-              <td>{{ persona.get_tipo_documento_display }} {{ persona.numero_documento }}</td>
+              <td><span class="sc-dato-mono">{{ persona.get_tipo_documento_display }} · {{ persona.numero_documento }}</span></td>
               <td><span class="sc-estado sc-estado--{{ persona.estado|lower }}">{{ persona.get_estado_display }}</span></td>
               <td>
                 {% for asignacion in persona.asignaciones.all %}
                   {{ asignacion.empresa.razon_social }}{% if not forloop.last %}, {% endif %}
                 {% empty %}
-                  <span class="text-gray-400">Sin asignar</span>
+                  <span class="sc-texto-muted">Sin asignar</span>
                 {% endfor %}
               </td>
               <td>
-                <div class="flex flex-wrap justify-end gap-1.5">
-                  <button type="button" class="sc-boton-secundario"
+                <div class="sc-tabla-acciones">
+                  <button type="button" class="sc-boton-secundario sc-boton-compacto"
                           hx-get="{% url 'personas:asignar' persona.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
-                    Asignar a empresa
+                    Asignar
                   </button>
                   <form method="post" action="{% url 'antecedentes:iniciar' persona.pk %}">
                     {% csrf_token %}
-                    <button type="submit" class="sc-boton-secundario">Verificar antecedentes</button>
+                    <button type="submit" class="sc-boton-secundario sc-boton-compacto">Antecedentes</button>
                   </form>
-                  <button type="button" class="sc-boton-secundario"
+                  <button type="button" class="sc-boton-secundario sc-boton-compacto"
                           hx-get="{% url 'accesos:solicitar' persona.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
-                    Solicitar ingreso
+                    Ingreso
                   </button>
                 </div>
               </td>

@@ -4,17 +4,17 @@
 {% block migas %}Espacio de trabajo <span class="sc-migas__sep">/</span> <strong>Documentos</strong>{% endblock %}
 
 {% block contenido %}
-  <p class="sc-etiqueta-seccion">Documentos</p>
   <div class="sc-cabecera-lista">
     <div>
+      <p class="sc-etiqueta-seccion">Documentos</p>
       <h1>Bandeja de revisión</h1>
       <p class="sc-subtitulo !mb-0">Requisitos con una versión de documento esperando decisión.</p>
     </div>
     <a href="{% url 'cumplimiento:catalogo' %}" class="sc-boton-secundario">Ver catálogo de requisitos</a>
   </div>
-  <p class="sc-subtitulo">Requisitos con una versión de documento esperando decisión.</p>
 
   {% if requisitos %}
+    <div class="sc-tabla-meta"><span>{{ requisitos|length }} revisiones pendientes</span><span class="sc-tabla-meta__hint">Ordenadas por fecha de llegada</span></div>
     <div class="sc-tabla-envoltorio">
       <table class="sc-tabla">
         <thead><tr><th>Requisito</th><th>Empresa / Persona</th><th>Estado</th><th></th></tr></thead>
@@ -24,7 +24,7 @@
               <td>{{ requisito.catalogo.nombre }}</td>
               <td>{{ requisito.empresa|default:requisito.persona }}</td>
               <td><span class="sc-estado sc-estado--{{ requisito.estado|lower }}">{{ requisito.get_estado_display }}</span></td>
-              <td><a href="{% url 'cumplimiento:detalle' requisito.pk %}">Revisar →</a></td>
+              <td><a class="sc-enlace-control" href="{% url 'cumplimiento:detalle' requisito.pk %}">Revisar</a></td>
             </tr>
           {% endfor %}
         </tbody>

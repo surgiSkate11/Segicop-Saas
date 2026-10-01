@@ -1,6 +1,6 @@
 {% load static %}
 <!DOCTYPE html>
-<html lang="es" class="h-full">
+<html lang="es" class="h-full" data-theme="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -8,10 +8,20 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{% static 'css/tailwind.css' %}">
-  <style>body { font-family: "Nunito", system-ui, sans-serif; }</style>
+  <script>
+    document.documentElement.dataset.theme = localStorage.getItem("sigecop-theme") || "light";
+  </script>
 </head>
-<body class="h-full min-h-screen flex items-center justify-center bg-gray-50 antialiased"
-      style="background-image: radial-gradient(600px circle at 15% 15%, rgba(232,98,44,0.10), transparent 60%);">
+<body class="sc-login-page h-full min-h-screen antialiased">
+  <div class="sc-login-page__marca" aria-hidden="true">
+    <div class="sc-marca__icono">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 2 3 6v6c0 5.2 3.8 9.4 9 10 5.2-.6 9-4.8 9-10V6z"/><path d="m9 12 2 2 4-4"/></svg>
+    </div>
+    <span>SIGECOP</span>
+  </div>
+  <button type="button" class="sc-icono-boton sc-login-page__tema" id="sc-login-theme-toggle" aria-label="Cambiar tema" title="Cambiar tema">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+  </button>
   <div class="sc-login">
     <div class="sc-login__logo">
       <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 2 3 6v6c0 5.2 3.8 9.4 9 10 5.2-.6 9-4.8 9-10V6z"/><path d="m9 12 2 2 4-4"/></svg>
@@ -43,5 +53,12 @@
       <button type="submit" class="sc-boton">Ingresar</button>
     </form>
   </div>
+  <script>
+    document.getElementById("sc-login-theme-toggle").addEventListener("click", function () {
+      const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = theme;
+      localStorage.setItem("sigecop-theme", theme);
+    });
+  </script>
 </body>
 </html>
