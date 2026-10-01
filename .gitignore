@@ -11,6 +11,16 @@ staticfiles/
 env/
 venv/
 /.venv/
+.env
+.env.*
+!.env.example
+
+# Cachés y artefactos de pruebas:
+__pycache__/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
 # Ignoramos archivos de configuración de PyCharm:
 .idea/
 # Ignoramos archivos del proyecto
