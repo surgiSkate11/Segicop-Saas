@@ -283,6 +283,11 @@ class DocumentoAntecedentes(BaseModel):
     vigente_hasta_extraida = models.DateField(null=True, blank=True)
     firma_detectada = models.BooleanField(default=False)  # diccionario de firma presente; no verificado (T9)
     codigo_error = models.CharField(max_length=80, blank=True)
+
+    def get_resultado_extraido_display(self):
+        if self.resultado_extraido in ResultadoAntecedentes.values:
+            return ResultadoAntecedentes(self.resultado_extraido).label
+        return self.resultado_extraido or "No reconocido"
     detalle_validacion = models.TextField(blank=True)
     validado_por = models.ForeignKey(
         "identidad.Usuario", on_delete=models.PROTECT, null=True, blank=True, related_name="+"

@@ -53,3 +53,7 @@ class AutorizacionDatosForm(EstiloFormMixin, forms.Form):
             "Autorizo la consulta de mis antecedentes penales ante el Ministerio del Interior "
             f"con la finalidad de: {finalidad_label.lower()}."
         )
+
+
+class RevocarAutorizacionForm(EstiloFormMixin, forms.Form):
+    motivo = forms.CharField(label="Motivo de la revocación", widget=forms.Textarea(attrs={"rows": 3}))

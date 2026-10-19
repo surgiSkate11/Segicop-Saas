@@ -1,11 +1,13 @@
 import hashlib
 import importlib
+import json
+import re
 import os
 import shutil
 import tempfile
 import urllib.error
 from email.message import Message
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from itertools import count, product
 from unittest import mock
 
@@ -36,6 +38,7 @@ from apps.antecedentes.models import (
     ResultadoAntecedentes,
     VerificacionAntecedentes,
 )
+from apps.antecedentes.conectores.asistido import ConectorAsistido
 from apps.antecedentes.conectores.base import ClaseRespuesta, ResultadoSondeo
 from apps.antecedentes.conectores.ministerio import PORTAL_URL, sondear_portal
 from apps.antecedentes.models import SaludFuente
@@ -2522,3 +2525,751 @@ class DescargarDocumentoTests(PipelineCertificadoBase):
         respuesta = self.client.get(f"/{settings.MEDIA_URL}{self.documento.archivo.name}")
 
         self.assertEqual(respuesta.status_code, 404)
+
+
+# --- T6: API pública y pantallas (S2, S4, S8, S10) -------------------------------------------------------
+
+
+class UIyAPIBase(PipelineCertificadoBase):
+    """Operador y revisores de la organización; usuarios sin acceso en otra organización."""
+
+    def setUp(self):
+        super().setUp()
+        self.otra_org = Organizacion.objects.create(nombre="Otra organización de la API")
+        self.garita = self.crear_usuario("garita-api@example.com", "seguridad_garita")
+        self.ajeno = self.crear_usuario("ajeno-api@example.com", "revisor_antecedentes", self.otra_org)
+        self.sin_roles = self.crear_usuario("sinroles-api@example.com")
+
+    def con_certificado(self, persona=None, **lineas):
+        """Verificación cargada por el operador con un certificado que coincide: AUTENTICIDAD_PENDIENTE."""
+        verificacion, _ = self.verificacion_lista(persona=persona)
+        self.cargar(verificacion, crear_pdf(lineas_certificado(**lineas)))
+        verificacion.refresh_from_db()
+        return verificacion
+
+    def enviar_json(self, url, datos, usuario=None, **cabeceras):
+        if usuario:
+            self.client.force_login(usuario)
+        return self.client.post(url, data=json.dumps(datos), content_type="application/json", **cabeceras)
+
+    def lecturas(self, verificacion):
+        return EventoAuditoria.objects.filter(accion="LEER_ANTECEDENTES", recurso_id=str(verificacion.pk))
+
+    def bitacora_total(self):
+        return EjecucionConector.objects.count()
+
+
+class VerificacionesAPICrearTests(UIyAPIBase):
+    url = "/api/v1/verificaciones-antecedentes"
+
+    def test_crear_con_clave_de_idempotencia_responde_202_y_la_misma_clave_devuelve_la_operacion_con_200(self):
+        datos = {"personaId": str(self.persona.pk), "finalidad": F.RENOVACION}
+        self.autorizar(finalidad=F.RENOVACION)
+
+        primera = self.enviar_json(self.url, datos, self.operador, HTTP_IDEMPOTENCY_KEY="clave-api-1")
+        bitacora = self.bitacora_total()
+        repetida = self.enviar_json(self.url, datos, HTTP_IDEMPOTENCY_KEY="clave-api-1")
+
+        verificacion = VerificacionAntecedentes.objects.get()
+        self.assertEqual(primera.status_code, 202)
+        self.assertEqual(primera.json()["id"], str(verificacion.pk))
+        self.assertEqual(primera.json()["estado"], E.LISTA)
+        self.assertEqual(verificacion.clave_idempotencia, "clave-api-1")
+        self.assertEqual(verificacion.finalidad, F.RENOVACION)
+        self.assertEqual(verificacion.solicitante, self.operador)
+        self.assertEqual(repetida.status_code, 200)
+        self.assertEqual(repetida.json()["id"], primera.json()["id"])
+        self.assertEqual(self.bitacora_total(), bitacora)
+
+    def test_sin_finalidad_ni_clave_usa_la_habilitacion_de_ingreso_y_genera_la_clave(self):
+        self.autorizar()
+
+        respuesta = self.enviar_json(self.url, {"personaId": str(self.persona.pk)}, self.operador)
+
+        verificacion = VerificacionAntecedentes.objects.get()
+        self.assertEqual(respuesta.status_code, 202)
+        self.assertEqual(verificacion.finalidad, F.HABILITACION_INGRESO)
+        self.assertEqual(respuesta.json()["finalidad"], F.HABILITACION_INGRESO)
+        self.assertTrue(verificacion.clave_idempotencia)
+
+    def test_sin_autorizacion_responde_el_codigo_de_autorizacion_requerida(self):
+        respuesta = self.enviar_json(self.url, {"personaId": str(self.persona.pk)}, self.operador)
+
+        self.assertEqual(respuesta.status_code, 202)
+        cuerpo = respuesta.json()
+        self.assertEqual(cuerpo["estado"], E.AUTORIZACION_PENDIENTE)
+        self.assertEqual(cuerpo["code"], "ANT_AUTHORIZATION_REQUIRED")
+        self.assertEqual(cuerpo["accionRequerida"], "REGISTRAR_AUTORIZACION")
+        self.assertIsNone(cuerpo["reintentarDesde"])
+
+    def test_en_modo_asistido_el_caso_espera_al_humano_con_el_documento_enmascarado(self):
+        self.autorizar()
+
+        with override_settings(ANTECEDENTES_CONECTOR_MODE="asistido"):
+            respuesta = self.enviar_json(self.url, {"personaId": str(self.persona.pk)}, self.operador)
+
+        cuerpo = respuesta.json()
+        self.assertEqual(respuesta.status_code, 202)
+        self.assertEqual(cuerpo["estado"], "CAPTCHA_REQUERIDO")
+        self.assertEqual(cuerpo["code"], "ANT_CAPTCHA_REQUIRED")
+        self.assertEqual(cuerpo["accionRequerida"], "INTERVENCION_HUMANA")
+        self.assertEqual(cuerpo["numeroDocumentoEnmascarado"], "******1111")
+        self.assertNotIn("1111111111", respuesta.content.decode())
+
+    def test_entradas_invalidas_se_rechazan_con_400_y_no_crean_nada(self):
+        casos = {
+            "sin persona": ({}, {}),
+            "persona que no es un uuid": ({"personaId": "abc"}, {}),
+            "finalidad desconocida": ({"personaId": str(self.persona.pk), "finalidad": "OTRA"}, {}),
+            "clave demasiado larga": ({"personaId": str(self.persona.pk)}, {"HTTP_IDEMPOTENCY_KEY": "x" * 65}),
+        }
+        self.client.force_login(self.operador)
+        for nombre, (datos, cabeceras) in casos.items():
+            with self.subTest(nombre):
+                respuesta = self.enviar_json(self.url, datos, **cabeceras)
+
+                self.assertEqual(respuesta.status_code, 400)
+                self.assertEqual(respuesta.json()["code"], "ANT_REQUEST_INVALID")
+                self.assertTrue(respuesta.json()["detail"])
+        self.assertEqual(VerificacionAntecedentes.objects.count(), 0)
+
+    def test_clave_usada_por_otra_persona_responde_400_sin_crear_nada(self):
+        otra = self.crear_persona()
+        self.autorizar(persona=otra)
+        self.autorizar()
+        self.enviar_json(self.url, {"personaId": str(otra.pk)}, self.operador, HTTP_IDEMPOTENCY_KEY="compartida")
+
+        respuesta = self.enviar_json(self.url, {"personaId": str(self.persona.pk)}, HTTP_IDEMPOTENCY_KEY="compartida")
+
+        self.assertEqual(respuesta.status_code, 400)
+        self.assertEqual(respuesta.json()["code"], "ANT_REQUEST_INVALID")
+        self.assertEqual(VerificacionAntecedentes.objects.count(), 1)
+
+    def test_sin_rol_en_la_organizacion_la_persona_no_existe_y_no_se_crea_nada(self):
+        usuarios = {"garita": self.garita, "revisor de otra organización": self.ajeno, "sin roles": self.sin_roles}
+        for nombre, usuario in usuarios.items():
+            with self.subTest(nombre):
+                respuesta = self.enviar_json(self.url, {"personaId": str(self.persona.pk)}, usuario)
+
+                self.assertEqual(respuesta.status_code, 404)
+        self.assertEqual(VerificacionAntecedentes.objects.count(), 0)
+
+    def test_sin_sesion_no_hay_acceso(self):
+        self.client.logout()
+
+        respuesta = self.enviar_json(self.url, {"personaId": str(self.persona.pk)})
+
+        self.assertEqual(respuesta.status_code, 403)
+        self.assertEqual(VerificacionAntecedentes.objects.count(), 0)
+
+
+class VerificacionesAPIDetalleTests(UIyAPIBase):
+    def url(self, verificacion):
+        return f"/api/v1/verificaciones-antecedentes/{verificacion.pk}"
+
+    def test_el_operador_no_recibe_el_resultado_y_el_revisor_si_y_cada_lectura_se_audita(self):
+        verificacion = self.con_certificado(resultado="SI")
+
+        self.client.force_login(self.operador)
+        operador = self.client.get(self.url(verificacion))
+        self.client.force_login(self.revisor2)
+        revisor = self.client.get(self.url(verificacion))
+
+        self.assertEqual((operador.status_code, revisor.status_code), (200, 200))
+        self.assertNotIn("resultado", operador.json())
+        self.assertEqual(revisor.json()["resultado"], ResultadoAntecedentes.SI)
+        self.assertEqual(operador.json()["estado"], E.AUTENTICIDAD_PENDIENTE)
+        lecturas = list(self.lecturas(verificacion).order_by("created_at"))
+        self.assertEqual([lectura.actor_id for lectura in lecturas], [self.operador.pk, self.revisor2.pk])
+        self.assertEqual([lectura.metadata["resultado_visible"] for lectura in lecturas], [False, True])
+
+    def test_sin_rol_en_la_organizacion_responde_404_y_no_audita_ninguna_lectura(self):
+        verificacion = self.con_certificado()
+        for nombre, usuario in {"garita": self.garita, "ajeno": self.ajeno, "sin roles": self.sin_roles}.items():
+            with self.subTest(nombre):
+                self.client.force_login(usuario)
+
+                respuesta = self.client.get(self.url(verificacion))
+
+                self.assertEqual(respuesta.status_code, 404)
+        self.assertEqual(self.lecturas(verificacion).count(), 0)
+
+    def test_fallida_informa_el_codigo_de_la_fuente_y_desde_cuando_reintentar(self):
+        self.autorizar()
+        self.sondeo.return_value = caido()
+        verificacion, _ = self.iniciar("asistido")
+        consulta = verificacion.consultas_proveedor.get()
+        self.client.force_login(self.operador)
+
+        respuesta = self.client.get(self.url(verificacion))
+
+        cuerpo = respuesta.json()
+        self.assertEqual((cuerpo["estado"], cuerpo["code"]), (E.FALLIDA, "ANT_SOURCE_UNAVAILABLE"))
+        self.assertEqual(cuerpo["accionRequerida"], "CARGA_MANUAL")
+        self.assertEqual(
+            datetime.fromisoformat(cuerpo["reintentarDesde"]),
+            max(consulta.proximo_intento_at, SaludFuente.objects.get().abierto_hasta),
+        )
+
+    def test_fallida_por_limite_de_consultas_informa_ant_rate_limited(self):
+        self.autorizar()
+        self.sondeo.return_value = ResultadoSondeo(
+            ClaseRespuesta.LIMITADA, codigo_http=429, latencia_ms=50, evidencia="HTTP 429 · 50 ms", reintentar_tras=3600
+        )
+        verificacion, _ = self.iniciar("asistido")
+        self.client.force_login(self.operador)
+
+        cuerpo = self.client.get(self.url(verificacion)).json()
+
+        self.assertEqual((cuerpo["estado"], cuerpo["code"]), (E.FALLIDA, "ANT_RATE_LIMITED"))
+        self.assertTrue(cuerpo["reintentarDesde"])
+
+    def test_fallida_sin_espera_pendiente_deja_reintentar_desde_en_null(self):
+        verificacion, consulta = self.verificacion_lista(E.FALLIDA)
+        consulta.codigo_error = "ANT_SOURCE_UNAVAILABLE"
+        consulta.proximo_intento_at = timezone.now() - timedelta(minutes=1)
+        consulta.save()
+        self.client.force_login(self.operador)
+
+        cuerpo = self.client.get(self.url(verificacion)).json()
+
+        self.assertEqual(cuerpo["code"], "ANT_SOURCE_UNAVAILABLE")
+        self.assertIsNone(cuerpo["reintentarDesde"])
+
+    def test_un_caso_que_no_espera_a_nadie_no_trae_codigo_ni_accion(self):
+        verificacion = self.con_certificado()
+        self.client.force_login(self.operador)
+
+        cuerpo = self.client.get(self.url(verificacion)).json()
+
+        self.assertEqual((cuerpo["code"], cuerpo["accionRequerida"], cuerpo["reintentarDesde"]), (None, None, None))
+
+
+class VerificacionesAPIContinuarTests(UIyAPIBase):
+    def url(self, verificacion):
+        return f"/api/v1/verificaciones-antecedentes/{verificacion.pk}/continuar"
+
+    def test_continuar_devuelve_la_url_del_portal_y_pasa_a_en_consulta(self):
+        verificacion, _ = self.verificacion_lista(E.CAPTCHA_REQUERIDO)
+        self.client.force_login(self.operador)
+
+        respuesta = self.client.post(self.url(verificacion))
+
+        verificacion.refresh_from_db()
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertEqual(respuesta.json()["urlPortal"], ConectorAsistido.url_portal)
+        self.assertEqual(respuesta.json()["estado"], E.EN_CONSULTA)
+        self.assertEqual(respuesta.json()["accionRequerida"], "INTERVENCION_HUMANA")
+        self.assertEqual(verificacion.estado, E.EN_CONSULTA)
+
+    def test_continuar_en_un_estado_que_no_lo_admite_responde_400_sin_cambios(self):
+        verificacion, _ = self.verificacion_lista(E.LISTA)
+        bitacora = self.bitacora_total()
+        self.client.force_login(self.operador)
+
+        respuesta = self.client.post(self.url(verificacion))
+
+        verificacion.refresh_from_db()
+        self.assertEqual(respuesta.status_code, 400)
+        self.assertEqual(respuesta.json()["code"], "ANT_REQUEST_INVALID")
+        self.assertEqual(verificacion.estado, E.LISTA)
+        self.assertEqual(self.bitacora_total(), bitacora)
+
+    def test_sin_rol_en_la_organizacion_continuar_responde_404_y_no_cambia_nada(self):
+        verificacion, _ = self.verificacion_lista(E.CAPTCHA_REQUERIDO)
+        self.client.force_login(self.garita)
+
+        respuesta = self.client.post(self.url(verificacion))
+
+        verificacion.refresh_from_db()
+        self.assertEqual(respuesta.status_code, 404)
+        self.assertEqual(verificacion.estado, E.CAPTCHA_REQUERIDO)
+
+
+class VerificacionesAPIDocumentoTests(UIyAPIBase):
+    def url(self, verificacion):
+        return f"/api/v1/verificaciones-antecedentes/{verificacion.pk}/documento"
+
+    def subir(self, verificacion, contenido, usuario=None, nombre="certificado.pdf"):
+        if usuario:
+            self.client.force_login(usuario)
+        return self.client.post(self.url(verificacion), {"archivo": self.pdf_subido(contenido, nombre)})
+
+    def test_carga_valida_responde_201_el_reintento_200_y_el_operador_no_ve_lo_extraido(self):
+        verificacion, _ = self.verificacion_lista(E.CAPTCHA_REQUERIDO)
+        contenido = crear_pdf(lineas_certificado(resultado="SI"))
+
+        primera = self.subir(verificacion, contenido, self.operador)
+        repetida = self.subir(verificacion, contenido)
+
+        documento = DocumentoAntecedentes.objects.get()
+        verificacion.refresh_from_db()
+        self.assertEqual(primera.status_code, 201)
+        self.assertEqual(primera.json()["documentoId"], str(documento.pk))
+        self.assertEqual(primera.json()["estado"], E.AUTENTICIDAD_PENDIENTE)
+        self.assertEqual(repetida.status_code, 200)
+        self.assertEqual(repetida.json()["documentoId"], str(documento.pk))
+        self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+        self.assertEqual(verificacion.cargado_por, self.operador)
+        for reservado in ("MI-2026-004455", "EVALUADA PERSONA", '"resultado"'):
+            self.assertNotIn(reservado, primera.content.decode())
+
+    def test_pdf_invalido_responde_400_con_codigo_y_deja_el_caso_como_estaba(self):
+        verificacion, _ = self.verificacion_lista(E.CAPTCHA_REQUERIDO)
+
+        respuesta = self.subir(verificacion, b"%PDF-1.4\nbasura\n%%EOF", self.operador)
+
+        documento = DocumentoAntecedentes.objects.get()
+        verificacion.refresh_from_db()
+        self.assertEqual(respuesta.status_code, 400)
+        self.assertEqual(respuesta.json()["code"], "ANT_DOCUMENT_INVALID")
+        self.assertTrue(respuesta.json()["detail"])
+        self.assertEqual(documento.estado_validacion, "CUARENTENA")
+        self.assertEqual(verificacion.estado, E.CAPTCHA_REQUERIDO)
+
+    def test_identidad_distinta_responde_201_con_el_codigo_y_sin_revelar_lo_extraido(self):
+        verificacion, _ = self.verificacion_lista()
+
+        respuesta = self.subir(
+            verificacion, crear_pdf(lineas_certificado(identificacion="1799999999", nombres="OTRA PERSONA")), self.operador
+        )
+
+        verificacion.refresh_from_db()
+        self.assertEqual(respuesta.status_code, 201)
+        self.assertEqual(respuesta.json()["code"], "ANT_IDENTITY_MISMATCH")
+        self.assertEqual(respuesta.json()["estado"], E.REQUIERE_REVISION)
+        self.assertEqual(verificacion.estado, E.REQUIERE_REVISION)
+        for reservado in ("1799999999", "OTRA PERSONA"):
+            self.assertNotIn(reservado, respuesta.content.decode())
+
+    def test_sin_archivo_o_en_un_estado_que_no_admite_carga_responde_400_sin_guardar(self):
+        lista, _ = self.verificacion_lista()
+        en_revision, _ = self.verificacion_lista(E.REQUIERE_REVISION, persona=self.crear_persona())
+        self.client.force_login(self.operador)
+
+        ausente = self.client.post(self.url(lista), {})
+        estado = self.subir(en_revision, crear_pdf(lineas_certificado()))
+
+        self.assertEqual(ausente.status_code, 400)
+        self.assertEqual(ausente.json()["code"], "ANT_REQUEST_INVALID")
+        self.assertEqual(estado.status_code, 400)
+        self.assertEqual(estado.json()["code"], "ANT_REQUEST_INVALID")
+        self.assertEqual(DocumentoAntecedentes.objects.count(), 0)
+
+    def test_sin_rol_en_la_organizacion_la_carga_responde_404_sin_guardar(self):
+        verificacion, _ = self.verificacion_lista()
+
+        respuesta = self.subir(verificacion, crear_pdf(lineas_certificado()), self.garita)
+
+        self.assertEqual(respuesta.status_code, 404)
+        self.assertEqual(DocumentoAntecedentes.objects.count(), 0)
+
+
+class VerificacionesAPIRevisionTests(UIyAPIBase):
+    def url(self, verificacion):
+        return f"/api/v1/verificaciones-antecedentes/{verificacion.pk}/revision"
+
+    def datos(self, **cambios):
+        datos = {
+            "decision": E.VALIDADA,
+            "comentario": "Coincide con el original.",
+            "vigenteHasta": (date.today() + timedelta(days=30)).isoformat(),
+        }
+        datos.update(cambios)
+        return datos
+
+    def test_el_revisor_valida_y_queda_registrada_la_decision(self):
+        verificacion = self.con_certificado()
+
+        respuesta = self.enviar_json(self.url(verificacion), self.datos(), self.revisor2)
+
+        verificacion.refresh_from_db()
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertEqual(respuesta.json()["estado"], E.VALIDADA)
+        self.assertEqual(respuesta.json()["resultado"], ResultadoAntecedentes.NO)
+        self.assertEqual(verificacion.estado, E.VALIDADA)
+        self.assertEqual(verificacion.validado_por, self.revisor2)
+        self.assertEqual(verificacion.vigente_hasta, date.today() + timedelta(days=30))
+        self.assertEqual(verificacion.comentario, "Coincide con el original.")
+
+    def test_el_operador_recibe_403_y_el_caso_no_cambia(self):
+        verificacion = self.con_certificado()
+        bitacora = self.bitacora_total()
+
+        respuesta = self.enviar_json(self.url(verificacion), self.datos(), self.operador)
+
+        verificacion.refresh_from_db()
+        self.assertEqual(respuesta.status_code, 403)
+        self.assertEqual(respuesta.json()["code"], "ANT_FORBIDDEN")
+        self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+        self.assertEqual(self.bitacora_total(), bitacora)
+
+    def test_sin_rol_en_la_organizacion_responde_404_y_no_cambia_nada(self):
+        verificacion = self.con_certificado()
+        for nombre, usuario in {"garita": self.garita, "ajeno": self.ajeno}.items():
+            with self.subTest(nombre):
+                respuesta = self.enviar_json(self.url(verificacion), self.datos(), usuario)
+
+                self.assertEqual(respuesta.status_code, 404)
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+
+    def test_cuatro_ojos_quien_cargo_el_documento_no_puede_validarlo(self):
+        verificacion, _ = self.verificacion_lista()
+        self.cargar(verificacion, crear_pdf(lineas_certificado()), actor=self.revisor2)
+
+        respuesta = self.enviar_json(self.url(verificacion), self.datos(), self.revisor2)
+
+        verificacion.refresh_from_db()
+        self.assertEqual(respuesta.status_code, 400)
+        self.assertEqual(respuesta.json()["code"], "ANT_REQUEST_INVALID")
+        self.assertEqual(respuesta.json()["detail"], "Quien cargó el documento no puede validarlo.")
+        self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+        self.assertIsNone(verificacion.validado_por)
+
+    def test_decisiones_incompletas_o_invalidas_responden_400_sin_cambios(self):
+        verificacion = self.con_certificado()
+        casos = {
+            "validar sin vigencia": self.datos(vigenteHasta=None),
+            "fecha mal escrita": self.datos(vigenteHasta="mañana"),
+            "decisión desconocida": self.datos(decision="APROBADA"),
+            "anular sin comentario": self.datos(decision=E.CANCELADA, comentario=""),
+            "sin decisión": {"comentario": "x"},
+        }
+        for nombre, datos in casos.items():
+            with self.subTest(nombre):
+                respuesta = self.enviar_json(self.url(verificacion), datos, self.revisor2)
+
+                self.assertEqual(respuesta.status_code, 400)
+                self.assertEqual(respuesta.json()["code"], "ANT_REQUEST_INVALID")
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+        self.assertIsNone(verificacion.validado_por)
+
+    def test_devolver_para_una_nueva_carga_con_motivo(self):
+        verificacion = self.con_certificado()
+
+        respuesta = self.enviar_json(
+            self.url(verificacion), {"decision": E.LISTA, "comentario": "Ilegible, carga otro."}, self.revisor2
+        )
+
+        verificacion.refresh_from_db()
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertEqual(verificacion.estado, E.LISTA)
+
+
+class BandejaFiltrosTests(UIyAPIBase):
+    def setUp(self):
+        super().setUp()
+        self.client.force_login(self.operador)
+
+    def caso(self, estado, nombres, **campos):
+        persona = Persona.objects.create(
+            organizacion=self.organizacion, tipo_documento=TipoDocumento.CEDULA,
+            numero_documento=str(next(_numeros)), nombres=nombres, apellidos="Bandeja",
+        )
+        return self.crear_verificacion(estado=estado, persona=persona, **campos)
+
+    def conteo(self, respuesta, estado):
+        patron = rf'data-estado="{estado}"[^>]*data-conteo="(\d+)"'
+        return int(re.search(patron, respuesta.content.decode()).group(1))
+
+    def test_la_bandeja_filtra_por_estado_y_muestra_los_conteos_de_cada_pestana(self):
+        self.caso(E.LISTA, "Lista1")
+        self.caso(E.LISTA, "Lista2")
+        self.caso(E.FALLIDA, "Fallida1")
+        self.caso(E.VALIDADA, "Validada1")
+
+        todas = self.client.get(reverse("antecedentes:bandeja"))
+        fallidas = self.client.get(reverse("antecedentes:bandeja"), {"estado": "FALLIDA"})
+
+        for nombre in ("Lista1", "Lista2", "Fallida1"):
+            self.assertContains(todas, nombre)
+        self.assertNotContains(todas, "Validada1")
+        self.assertContains(fallidas, "Fallida1")
+        for nombre in ("Lista1", "Lista2"):
+            self.assertNotContains(fallidas, nombre)
+        for respuesta in (todas, fallidas):
+            self.assertEqual(self.conteo(respuesta, "LISTA"), 2)
+            self.assertEqual(self.conteo(respuesta, "FALLIDA"), 1)
+            self.assertEqual(self.conteo(respuesta, "REQUIERE_REVISION"), 0)
+        self.assertContains(fallidas, 'aria-current="page" data-estado="FALLIDA"')
+
+    def test_un_estado_desconocido_o_fuera_de_la_bandeja_muestra_todos_los_casos(self):
+        self.caso(E.LISTA, "Lista1")
+        self.caso(E.FALLIDA, "Fallida1")
+
+        for valor in ("NO_EXISTE", "VALIDADA"):
+            with self.subTest(valor):
+                respuesta = self.client.get(reverse("antecedentes:bandeja"), {"estado": valor})
+
+                self.assertContains(respuesta, "Lista1")
+                self.assertContains(respuesta, "Fallida1")
+
+    def test_los_conteos_solo_incluyen_las_organizaciones_del_usuario(self):
+        self.caso(E.LISTA, "Propia")
+        ajena = self.crear_persona(self.otra_org)
+        self.crear_verificacion(estado=E.LISTA, persona=ajena)
+
+        respuesta = self.client.get(reverse("antecedentes:bandeja"))
+
+        self.assertEqual(self.conteo(respuesta, "LISTA"), 1)
+
+    def test_la_bandeja_nunca_muestra_resultados_ni_al_revisor(self):
+        self.caso(
+            E.REQUIERE_REVISION, "Reservado", resultado=ResultadoAntecedentes.SI, numero_certificado="CERT-BANDEJA-77"
+        )
+        self.client.force_login(self.revisor2)
+
+        respuesta = self.client.get(reverse("antecedentes:bandeja"))
+
+        self.assertContains(respuesta, "Reservado")
+        for reservado in ("CERT-BANDEJA-77", "hallazgos"):
+            self.assertNotContains(respuesta, reservado)
+
+    def test_una_fallida_indica_a_partir_de_que_hora_se_podra_reintentar(self):
+        verificacion = self.caso(E.FALLIDA, "Esperando")
+        consulta = ConsultaProveedor.objects.create(
+            verificacion=verificacion, proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR,
+            proximo_intento_at=timezone.now() + timedelta(minutes=30),
+        )
+        listo = self.caso(E.FALLIDA, "SinEspera")
+        ConsultaProveedor.objects.create(verificacion=listo, proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR)
+
+        respuesta = self.client.get(reverse("antecedentes:bandeja"))
+
+        hora = timezone.localtime(consulta.proximo_intento_at).strftime("%H:%M")
+        self.assertContains(respuesta, f"Podrás reintentar después de las {hora}")
+        self.assertContains(respuesta, "Ya puedes reintentar")
+        self.assertEqual(respuesta.content.decode().count("Podrás reintentar después de las"), 1)
+
+
+class DetalleCargaCertificadoTests(UIyAPIBase):
+    def setUp(self):
+        super().setUp()
+        self.client.force_login(self.operador)
+        self.verificacion, _ = self.verificacion_lista()
+        self.url = reverse("antecedentes:detalle", args=[self.verificacion.pk])
+
+    def subir(self, contenido, nombre="certificado.pdf"):
+        return self.client.post(
+            self.url, {"accion": "cargar_certificado", "archivo": self.pdf_subido(contenido, nombre)}, follow=True
+        )
+
+    def test_el_detalle_ofrece_la_zona_de_arrastre_con_el_selector_de_archivo_como_alternativa(self):
+        respuesta = self.client.get(self.url)
+
+        self.assertContains(respuesta, 'enctype="multipart/form-data"')
+        self.assertContains(respuesta, 'value="cargar_certificado"')
+        self.assertContains(respuesta, 'type="file"')
+        self.assertContains(respuesta, 'accept="application/pdf"')
+        self.assertContains(respuesta, "data-zona-carga")
+        self.assertContains(respuesta, "antecedentes/carga.js")
+        # La contingencia manual sigue disponible.
+        self.assertContains(respuesta, 'value="cargar_resultado"')
+
+    def test_la_zona_de_carga_solo_aparece_en_los_estados_que_admiten_carga(self):
+        for estado in maquina_estados.ESTADOS_CARGA_MANUAL:
+            with self.subTest(estado):
+                caso, _ = self.verificacion_lista(estado)
+
+                respuesta = self.client.get(reverse("antecedentes:detalle", args=[caso.pk]))
+
+                self.assertContains(respuesta, 'value="cargar_certificado"')
+        for estado in (E.REQUIERE_REVISION, E.AUTENTICIDAD_PENDIENTE, E.VALIDADA, E.CANCELADA):
+            with self.subTest(estado):
+                caso, _ = self.verificacion_lista(estado)
+
+                respuesta = self.client.get(reverse("antecedentes:detalle", args=[caso.pk]))
+
+                self.assertNotContains(respuesta, 'value="cargar_certificado"')
+
+    def test_una_carga_valida_avanza_el_caso_sin_mostrar_el_resultado_al_operador(self):
+        respuesta = self.subir(crear_pdf(lineas_certificado(resultado="SI")))
+
+        self.verificacion.refresh_from_db()
+        self.assertEqual(self.verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+        self.assertEqual(self.verificacion.cargado_por, self.operador)
+        self.assertContains(respuesta, "Certificado recibido")
+        for reservado in ("MI-2026-004455", "EVALUADA PERSONA", "hallazgos", "Registra antecedentes"):
+            self.assertNotContains(respuesta, reservado)
+
+    def test_un_pdf_invalido_muestra_el_motivo_y_deja_el_caso_como_estaba(self):
+        respuesta = self.subir(b"%PDF-1.4\nbasura\n%%EOF")
+
+        self.verificacion.refresh_from_db()
+        documento = DocumentoAntecedentes.objects.get()
+        self.assertEqual(self.verificacion.estado, E.LISTA)
+        self.assertEqual(documento.estado_validacion, "CUARENTENA")
+        self.assertContains(respuesta, documento.detalle_validacion.split(" Se conserva")[0])
+        self.assertContains(respuesta, "cuarentena")
+
+    def test_una_identidad_distinta_avisa_al_operador_sin_revelar_lo_extraido(self):
+        respuesta = self.subir(crear_pdf(lineas_certificado(identificacion="1799999999", nombres="OTRA PERSONA")))
+
+        self.verificacion.refresh_from_db()
+        self.assertEqual(self.verificacion.estado, E.REQUIERE_REVISION)
+        self.assertContains(respuesta, "no coincide con la identidad de la persona")
+        for reservado in ("1799999999", "OTRA PERSONA"):
+            self.assertNotContains(respuesta, reservado)
+
+    def test_un_resultado_ambiguo_avisa_que_pasa_a_revision(self):
+        respuesta = self.subir(crear_pdf(lineas_certificado(resultado="")))
+
+        self.verificacion.refresh_from_db()
+        self.assertEqual(self.verificacion.estado, E.REQUIERE_REVISION)
+        self.assertContains(respuesta, "No se pudo reconocer el resultado")
+
+    def test_repetir_el_mismo_archivo_avisa_que_ya_estaba_cargado(self):
+        contenido = crear_pdf(lineas_certificado())
+        self.subir(contenido)
+
+        respuesta = self.subir(contenido)
+
+        self.assertContains(respuesta, "ya estaba cargado")
+        self.assertEqual(DocumentoAntecedentes.objects.count(), 1)
+
+    def test_sin_archivo_o_con_otra_extension_muestra_el_error_sin_guardar(self):
+        sin_archivo = self.client.post(self.url, {"accion": "cargar_certificado"}, follow=True)
+        extension = self.subir(crear_pdf(lineas_certificado()), nombre="certificado.exe")
+
+        self.assertContains(sin_archivo, "Selecciona el certificado en PDF")
+        self.assertContains(extension, "El nombre del archivo no es válido.")
+        self.assertEqual(DocumentoAntecedentes.objects.count(), 0)
+        self.verificacion.refresh_from_db()
+        self.assertEqual(self.verificacion.estado, E.LISTA)
+
+    def test_quien_no_opera_antecedentes_recibe_403_y_no_se_guarda_nada(self):
+        self.client.force_login(self.garita)
+
+        respuesta = self.client.post(
+            self.url, {"accion": "cargar_certificado", "archivo": self.pdf_subido(crear_pdf(lineas_certificado()))}
+        )
+
+        self.assertEqual(respuesta.status_code, 403)
+        self.assertEqual(DocumentoAntecedentes.objects.count(), 0)
+
+
+class DetalleRevisorTests(UIyAPIBase):
+    def test_el_revisor_ve_los_datos_extraidos_el_enlace_de_descarga_y_el_formulario_de_decision(self):
+        verificacion = self.con_certificado(resultado="SI")
+        documento = DocumentoAntecedentes.objects.get()
+        self.client.force_login(self.revisor2)
+
+        respuesta = self.client.get(reverse("antecedentes:detalle", args=[verificacion.pk]))
+
+        for dato in (
+            "MI-2026-004455", "19/10/2026", "18/04/2027", "1111111111", "EVALUADA PERSONA",
+            "Sí (hallazgos)", "Firma detectada",
+        ):
+            self.assertContains(respuesta, dato)
+        self.assertContains(respuesta, reverse("antecedentes:descargar-documento", args=[documento.pk]))
+        self.assertContains(respuesta, 'value="validar"')
+
+    def test_el_revisor_ve_el_codigo_de_error_de_un_certificado_con_otra_identidad(self):
+        verificacion, _ = self.verificacion_lista()
+        self.cargar(verificacion, crear_pdf(lineas_certificado(identificacion="1799999999", nombres="OTRA PERSONA")))
+        self.client.force_login(self.revisor2)
+
+        respuesta = self.client.get(reverse("antecedentes:detalle", args=[verificacion.pk]))
+
+        self.assertContains(respuesta, "ANT_IDENTITY_MISMATCH")
+        self.assertContains(respuesta, "1799999999")
+
+    def test_el_operador_no_ve_el_panel_del_certificado_ni_el_enlace_de_descarga(self):
+        verificacion = self.con_certificado(resultado="SI")
+        documento = DocumentoAntecedentes.objects.get()
+        self.client.force_login(self.operador)
+
+        respuesta = self.client.get(reverse("antecedentes:detalle", args=[verificacion.pk]))
+
+        self.assertNotContains(respuesta, reverse("antecedentes:descargar-documento", args=[documento.pk]))
+        for reservado in ("MI-2026-004455", "EVALUADA PERSONA", "Firma detectada", "hallazgos"):
+            self.assertNotContains(respuesta, reservado)
+
+    def test_el_revisor_que_cargo_el_documento_ve_los_datos_pero_no_puede_decidir(self):
+        verificacion, _ = self.verificacion_lista()
+        self.cargar(verificacion, crear_pdf(lineas_certificado()), actor=self.revisor2)
+        self.client.force_login(self.revisor2)
+
+        respuesta = self.client.get(reverse("antecedentes:detalle", args=[verificacion.pk]))
+
+        self.assertContains(respuesta, "MI-2026-004455")
+        self.assertNotContains(respuesta, 'value="validar"')
+        self.assertContains(respuesta, "Quien cargó el documento no puede validarlo")
+
+
+class RevocarAutorizacionUITests(UIyAPIBase):
+    def setUp(self):
+        super().setUp()
+        self.autorizacion = self.autorizar()
+        self.verificacion, _ = self.iniciar("manual")
+        self.url = reverse("antecedentes:revocar-autorizacion", args=[self.verificacion.pk])
+        self.client.force_login(self.operador)
+
+    def test_el_detalle_ofrece_revocar_mientras_la_autorizacion_siga_vigente(self):
+        con_boton = self.client.get(reverse("antecedentes:detalle", args=[self.verificacion.pk]))
+        services.revocar_autorizacion(
+            autorizacion=self.autorizacion, motivo="La persona retiró su consentimiento.", actor=self.operador
+        )
+        sin_boton = self.client.get(reverse("antecedentes:detalle", args=[self.verificacion.pk]))
+
+        self.assertContains(con_boton, self.url)
+        self.assertNotContains(sin_boton, self.url)
+
+    def test_el_modal_pide_el_motivo(self):
+        respuesta = self.client.get(self.url, HTTP_HX_REQUEST="true")
+
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertContains(respuesta, 'name="motivo"')
+        self.assertContains(respuesta, "Revocar autorización")
+
+    def test_revocar_con_motivo_anula_el_caso_y_queda_auditado(self):
+        respuesta = self.client.post(
+            self.url, {"motivo": "La persona retiró su consentimiento."}, HTTP_HX_REQUEST="true"
+        )
+
+        self.autorizacion.refresh_from_db()
+        self.verificacion.refresh_from_db()
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertEqual(respuesta["HX-Redirect"], reverse("antecedentes:detalle", args=[self.verificacion.pk]))
+        self.assertIsNotNone(self.autorizacion.revocada_en)
+        self.assertEqual(self.autorizacion.motivo_revocacion, "La persona retiró su consentimiento.")
+        self.assertEqual(self.verificacion.estado, E.CANCELADA)
+        evento = EventoAuditoria.objects.get(accion="AUTORIZACION_REVOCADA")
+        self.assertEqual(evento.actor_id, self.operador.pk)
+
+    def test_revocar_sin_motivo_muestra_el_error_y_no_cambia_nada(self):
+        respuesta = self.client.post(self.url, {"motivo": "   "}, HTTP_HX_REQUEST="true")
+
+        self.autorizacion.refresh_from_db()
+        self.verificacion.refresh_from_db()
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertNotIn("HX-Redirect", respuesta)
+        self.assertContains(respuesta, "motivo")
+        self.assertIsNone(self.autorizacion.revocada_en)
+        self.assertEqual(self.verificacion.estado, E.LISTA)
+        self.assertEqual(EventoAuditoria.objects.filter(accion="AUTORIZACION_REVOCADA").count(), 0)
+
+    def test_una_autorizacion_ya_revocada_se_rechaza_con_mensaje(self):
+        services.revocar_autorizacion(autorizacion=self.autorizacion, motivo="Primera vez.", actor=self.operador)
+
+        respuesta = self.client.post(self.url, {"motivo": "Otra vez."}, HTTP_HX_REQUEST="true")
+
+        self.assertNotIn("HX-Redirect", respuesta)
+        self.assertContains(respuesta, "ya fue revocada")
+        self.autorizacion.refresh_from_db()
+        self.assertEqual(self.autorizacion.motivo_revocacion, "Primera vez.")
+
+    def test_sin_rol_en_la_organizacion_es_403_y_sin_htmx_redirige_al_detalle(self):
+        self.client.force_login(self.garita)
+        prohibido = self.client.post(self.url, {"motivo": "x"}, HTTP_HX_REQUEST="true")
+        self.client.force_login(self.ajeno)
+        ajeno = self.client.post(self.url, {"motivo": "x"}, HTTP_HX_REQUEST="true")
+        self.client.force_login(self.operador)
+        sin_htmx = self.client.get(self.url)
+
+        self.assertEqual((prohibido.status_code, ajeno.status_code), (403, 403))
+        self.assertRedirects(sin_htmx, reverse("antecedentes:detalle", args=[self.verificacion.pk]))
+        self.autorizacion.refresh_from_db()
+        self.assertIsNone(self.autorizacion.revocada_en)
