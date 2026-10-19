@@ -25,6 +25,7 @@ def procesar_vencimientos(*, actor=None):
             cumplimiento_services.recalcular_persona(requisito.persona, actor=actor)
 
     antecedentes_services.marcar_vencidas(actor=actor)
+    renovaciones_antecedentes = antecedentes_services.programar_renovaciones(actor=actor)
     accesos_services.marcar_vencidos(actor=actor)
 
     alertas_documentos = _alertar_documentos_vencidos(hoy=hoy)
@@ -34,6 +35,7 @@ def procesar_vencimientos(*, actor=None):
         "documentos": alertas_documentos,
         "antecedentes": alertas_antecedentes,
         "permisos_ingreso": alertas_permisos,
+        "renovaciones_antecedentes": renovaciones_antecedentes,
         "total_alertas": alertas_documentos + alertas_antecedentes + alertas_permisos,
     }
 

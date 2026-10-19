@@ -8,6 +8,7 @@ from datetime import time as hora_del_dia
 from django.conf import settings
 from django.core.files.base import ContentFile
 from django.db import IntegrityError, transaction
+from django.db.models import OuterRef, Subquery
 from django.utils import timezone
 
 from apps.antecedentes import certificado, maquina_estados, pdf, permisos
@@ -783,6 +784,17 @@ def _certificado_de_otra_identidad(verificacion) -> bool:
     return bool(ultimo and ultimo.codigo_error == ANT_IDENTITY_MISMATCH)
 
 
+def vigencia_del_certificado(verificacion):
+    """'Válido hasta' extraído del último certificado cargado que no está en cuarentena, o None."""
+    return (
+        DocumentoAntecedentes.objects.filter(consulta__verificacion=verificacion, vigente_hasta_extraida__isnull=False)
+        .exclude(estado_validacion="CUARENTENA")
+        .order_by("-created_at")
+        .values_list("vigente_hasta_extraida", flat=True)
+        .first()
+    )
+
+
 @transaction.atomic
 def validar_verificacion(*, verificacion, revisor, decision: str, comentario="", vigente_hasta=None):
     # Cuatro ojos (ANT-013): decide un revisor y nunca quien cargó la evidencia. Siempre activo.
@@ -795,8 +807,16 @@ def validar_verificacion(*, verificacion, revisor, decision: str, comentario="",
         raise DomainError(f"Decisión inválida: {decision}")
     if verificacion.estado not in maquina_estados.ESTADOS_DECISION:
         raise DomainError(f"La verificación en estado '{verificacion.estado}' no espera una decisión de revisión.")
-    if decision == EstadoVerificacion.VALIDADA and not vigente_hasta:
-        raise DomainError("Toda validación debe indicar hasta cuándo es vigente el resultado.")
+    if decision == EstadoVerificacion.VALIDADA:
+        # S9: la vigencia sale del certificado; el revisor puede acortarla, nunca extenderla.
+        del_certificado = vigencia_del_certificado(verificacion)
+        if vigente_hasta and del_certificado and vigente_hasta > del_certificado:
+            raise DomainError(
+                f"La vigencia ({vigente_hasta:%d/%m/%Y}) no puede superar la del certificado ({del_certificado:%d/%m/%Y})."
+            )
+        vigente_hasta = vigente_hasta or del_certificado
+        if not vigente_hasta:
+            raise DomainError("Toda validación debe indicar hasta cuándo es vigente el resultado.")
     if decision == EstadoVerificacion.VALIDADA and _certificado_de_otra_identidad(verificacion):
         raise DomainError(
             "El certificado no coincide con la identidad de la persona: no se puede validar. "
@@ -845,4 +865,31 @@ def marcar_vencidas(actor=None) -> int:
             nota_bitacora="Vencimiento detectado automáticamente.",
         )
         total += 1
+    return total
+
+
+def programar_renovaciones(actor=None) -> int:
+    """
+    ANT-012: abre una nueva consulta (finalidad RENOVACION) para quien sigue con una asignación
+    activa y cuya última verificación, validada o vencida, vence dentro del plazo configurado.
+    Si la última verificación es otra (una renovación en curso o anulada) no se insiste.
+    """
+    limite = timezone.now().date() + timedelta(days=_config("ANTECEDENTES_DIAS_RENOVACION", 15))
+    ultima = VerificacionAntecedentes.objects.filter(persona=OuterRef("pk")).order_by("-created_at")
+    candidatas = (
+        Persona.objects.filter(asignaciones__activa=True)
+        .distinct()
+        .annotate(
+            ultimo_estado=Subquery(ultima.values("estado")[:1]),
+            ultima_vigencia=Subquery(ultima.values("vigente_hasta")[:1]),
+        )
+        .filter(
+            ultimo_estado__in=(EstadoVerificacion.VALIDADA, EstadoVerificacion.VENCIDA),
+            ultima_vigencia__lte=limite,
+        )
+    )
+    total = 0
+    for persona in candidatas:
+        _, creada = iniciar_verificacion(persona=persona, actor=actor, finalidad=FinalidadConsulta.RENOVACION)
+        total += int(creada)
     return total

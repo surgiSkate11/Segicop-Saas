@@ -59,27 +59,49 @@ class HabilitacionTests(TestCase):
         self.assertTrue(resultado.habilitado)
         self.assertIn("Cumple", resultado.motivo)
 
+    # S8: garita, solicitantes y trabajos no deben poder deducir el resultado de antecedentes por el motivo.
+    MOTIVO_ANTECEDENTES = (
+        "Antecedentes penales sin habilitación vigente; el área de antecedentes debe revisarlo."
+    )
+
     def test_rechaza_persona_sin_verificacion_validada(self):
         resultado = calcular_habilitacion(self.persona)
 
-        self.assertFalse(resultado.habilitado)
-        self.assertIn("No hay una verificación", resultado.motivo)
+        self.assertEqual((resultado.habilitado, resultado.motivo), (False, self.MOTIVO_ANTECEDENTES))
 
-    def test_rechaza_resultado_de_antecedentes_con_hallazgos(self):
+    def test_rechaza_resultado_de_antecedentes_con_hallazgos_sin_revelarlo(self):
         self.crear_verificacion(resultado=ResultadoAntecedentes.SI)
 
         resultado = calcular_habilitacion(self.persona)
 
-        self.assertFalse(resultado.habilitado)
-        self.assertIn("requiere revisión", resultado.motivo)
+        self.assertEqual((resultado.habilitado, resultado.motivo), (False, self.MOTIVO_ANTECEDENTES))
 
     def test_rechaza_verificacion_vencida(self):
         self.crear_verificacion(vigente_hasta=date.today() - timedelta(days=1))
 
         resultado = calcular_habilitacion(self.persona)
 
-        self.assertFalse(resultado.habilitado)
-        self.assertIn("venció", resultado.motivo)
+        self.assertEqual((resultado.habilitado, resultado.motivo), (False, self.MOTIVO_ANTECEDENTES))
+
+    def test_una_renovacion_en_curso_no_quita_la_habilitacion_vigente(self):
+        self.crear_verificacion()
+        VerificacionAntecedentes.objects.create(
+            organizacion=self.organizacion, persona=self.persona, estado=EstadoVerificacion.REQUIERE_REVISION,
+            modo_conector=ModoConector.MANUAL, resultado=ResultadoAntecedentes.SI, finalidad="RENOVACION",
+        )
+
+        self.assertTrue(calcular_habilitacion(self.persona).habilitado)
+
+    def test_el_permiso_rechazado_no_revela_el_resultado(self):
+        self.crear_verificacion(resultado=ResultadoAntecedentes.SI)
+
+        permiso = solicitar_permiso_ingreso(
+            persona=self.persona, instalacion=self.instalacion, actor=self.usuario,
+            fecha_inicio_vigencia=date.today(), fecha_fin_vigencia=date.today() + timedelta(days=1),
+        )
+
+        self.assertEqual(permiso.motivo, self.MOTIVO_ANTECEDENTES)
+        self.assertNotIn("hallazgos", permiso.motivo)
 
     def test_solicitar_permiso_guarda_resultado_de_habilitacion(self):
         self.crear_verificacion()
