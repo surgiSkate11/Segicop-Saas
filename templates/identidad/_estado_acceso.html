@@ -1,0 +1,4 @@
+{# Estado de la cuenta de portal de un titular. Contexto: cuenta (Usuario o None) #}
+{% if not cuenta %}<span class="sc-estado sc-estado--borrador">Sin cuenta</span>
+{% elif cuenta.cuenta_activada_at %}<span class="sc-estado sc-estado--habilitado">Activa</span>
+{% else %}<span class="sc-estado sc-estado--en_revision">Pendiente de activación</span>{% endif %}

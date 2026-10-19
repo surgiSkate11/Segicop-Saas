@@ -78,6 +78,16 @@ ASGI_APPLICATION = "sigecop.asgi.application"
 
 AUTH_USER_MODEL = "identidad.Usuario"
 
+# Login con RUC/cédula (cuentas de portal) o correo (personal interno).
+AUTHENTICATION_BACKENDS = ["apps.identidad.backends.NombreUsuarioOCorreoBackend"]
+
+# Vigencia del enlace de activación de cuentas de portal (y de restablecimiento): 72 h.
+PASSWORD_RESET_TIMEOUT = 72 * 60 * 60
+
+# URL pública usada para armar los enlaces de los correos (no hay request en los servicios).
+SIGECOP_SITIO_URL = env("SIGECOP_SITIO_URL", default="http://localhost:8000")
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="SIGECOP <no-responder@sigecop.local>")
+
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
