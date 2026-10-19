@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import models
 
 from apps.core.models import BaseModel, OrganizacionScopedModel
@@ -18,6 +20,30 @@ class EstadoVerificacion(models.TextChoices):
     FALLIDA = "FALLIDA", "Fallida"
     VENCIDA = "VENCIDA", "Vencida"
     CANCELADA = "CANCELADA", "Cancelada"
+
+
+# Estados que ya no cuentan como solicitud en curso (ANT-002): permiten abrir una nueva.
+ESTADOS_CERRADOS = (
+    EstadoVerificacion.VALIDADA,
+    EstadoVerificacion.VENCIDA,
+    EstadoVerificacion.CANCELADA,
+    EstadoVerificacion.FALLIDA,
+)
+
+
+class FinalidadConsulta(models.TextChoices):
+    HABILITACION_INGRESO = "HABILITACION_INGRESO", "Habilitación de ingreso a instalaciones"
+    RENOVACION = "RENOVACION", "Renovación por vencimiento"
+
+
+class MedioAutorizacion(models.TextChoices):
+    DOCUMENTO_FIRMADO = "DOCUMENTO_FIRMADO", "Documento firmado"
+    PORTAL = "PORTAL", "Portal"
+    OTRO = "OTRO", "Otro"
+
+
+def generar_clave_idempotencia():
+    return uuid.uuid4().hex
 
 
 class EstadoConsulta(models.TextChoices):
@@ -64,6 +90,33 @@ class ResultadoAntecedentes(models.TextChoices):
     NO_DETERMINADO = "NO_DETERMINADO", "No determinado"
 
 
+class AutorizacionDatos(OrganizacionScopedModel):
+    """
+    ANT-001: consentimiento de la persona para consultar sus antecedentes.
+    Append-only (RN-001): tras crearse solo cambian los campos de revocación,
+    y únicamente a través de `services.revocar_autorizacion`.
+    """
+
+    persona = models.ForeignKey("personas.Persona", on_delete=models.PROTECT, related_name="autorizaciones_datos")
+    finalidad = models.CharField(max_length=30, choices=FinalidadConsulta.choices)
+    texto = models.TextField(help_text="Texto del consentimiento tal como lo aceptó la persona.")
+    version = models.CharField(max_length=30)
+    medio = models.CharField(max_length=20, choices=MedioAutorizacion.choices)
+    referencia_evidencia = models.CharField(max_length=255, blank=True)
+    otorgada_en = models.DateField()
+    registrada_por = models.ForeignKey("identidad.Usuario", on_delete=models.PROTECT, related_name="+")
+    revocada_en = models.DateTimeField(null=True, blank=True)
+    motivo_revocacion = models.TextField(blank=True)
+
+    class Meta:
+        verbose_name = "Autorización de datos"
+        verbose_name_plural = "Autorizaciones de datos"
+        indexes = [models.Index(fields=["persona", "finalidad"])]
+
+    def __str__(self):
+        return f"{self.persona} · {self.get_finalidad_display()}"
+
+
 class VerificacionAntecedentes(OrganizacionScopedModel):
     """
     RN-007 / ANT-014: el resultado NUNCA se fusiona con la habilitación
@@ -78,6 +131,19 @@ class VerificacionAntecedentes(OrganizacionScopedModel):
     persona = models.ForeignKey(
         "personas.Persona", on_delete=models.CASCADE, related_name="verificaciones_antecedentes"
     )
+    finalidad = models.CharField(
+        max_length=30, choices=FinalidadConsulta.choices, default=FinalidadConsulta.HABILITACION_INGRESO
+    )
+    autorizacion = models.ForeignKey(
+        AutorizacionDatos, on_delete=models.PROTECT, null=True, blank=True, related_name="verificaciones"
+    )
+    solicitante = models.ForeignKey(
+        "identidad.Usuario", on_delete=models.PROTECT, null=True, blank=True, related_name="+"
+    )
+    responsable = models.ForeignKey(
+        "identidad.Usuario", on_delete=models.PROTECT, null=True, blank=True, related_name="+"
+    )
+    clave_idempotencia = models.CharField(max_length=64, unique=True, default=generar_clave_idempotencia)
     estado = models.CharField(max_length=30, choices=EstadoVerificacion.choices, default=EstadoVerificacion.CREADA)
     modo_conector = models.CharField(max_length=10, choices=ModoConector.choices)
     resultado = models.CharField(max_length=20, choices=ResultadoAntecedentes.choices, null=True, blank=True)
@@ -97,6 +163,14 @@ class VerificacionAntecedentes(OrganizacionScopedModel):
         verbose_name = "Verificación de antecedentes"
         verbose_name_plural = "Verificaciones de antecedentes"
         indexes = [models.Index(fields=["organizacion", "estado"])]
+        constraints = [
+            # ANT-002: una sola solicitud en curso por persona y finalidad.
+            models.UniqueConstraint(
+                fields=["persona", "finalidad"],
+                condition=~models.Q(estado__in=ESTADOS_CERRADOS),
+                name="una_solicitud_activa_por_persona_y_finalidad",
+            )
+        ]
 
     def __str__(self):
         return f"{self.persona} · {self.get_estado_display()}"

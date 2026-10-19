@@ -1,22 +1,27 @@
 import importlib
 from datetime import date, timedelta
-from itertools import product
+from itertools import count, product
+from unittest import mock
 
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.db import connection
+from django.db import IntegrityError, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from apps.accesos.services import calcular_habilitacion
 from apps.antecedentes import maquina_estados, services
 from apps.antecedentes.api import _validar_pdf_seguro
 from apps.antecedentes.models import (
+    AutorizacionDatos,
     ConsultaProveedor,
     EjecucionConector,
     EstadoConsulta,
     EstadoVerificacion,
+    FinalidadConsulta,
     IntentoConsulta,
+    MedioAutorizacion,
     ModoConector,
     ProveedorAntecedentes,
     ResultadoAntecedentes,
@@ -31,6 +36,8 @@ from apps.identidad.models import Organizacion, Rol, RolAsignado, Usuario
 from apps.personas.models import Asignacion, Persona, TipoDocumento
 
 E = EstadoVerificacion
+F = FinalidadConsulta
+_numeros = count(9000000000)
 
 # Tabla esperada (S5 + extensiones documentadas); se fija aquí para detectar cambios accidentales.
 TRANSICIONES_ESPERADAS = {
@@ -65,14 +72,41 @@ class BaseAntecedentesTests(TestCase):
             apellidos="Evaluada",
         )
 
-    def crear_verificacion(self, estado=E.CREADA, **campos):
+    def crear_persona(self, organizacion=None):
+        return Persona.objects.create(
+            organizacion=organizacion or self.organizacion,
+            tipo_documento=TipoDocumento.CEDULA,
+            numero_documento=str(next(_numeros)),
+            nombres="Otra",
+            apellidos="Persona",
+        )
+
+    def crear_verificacion(self, estado=E.CREADA, persona=None, **campos):
+        # Una persona nueva por defecto: solo puede haber una solicitud activa por persona y finalidad.
+        persona = persona or self.crear_persona()
         return VerificacionAntecedentes.objects.create(
-            organizacion=self.organizacion,
-            persona=self.persona,
+            organizacion=persona.organizacion,
+            persona=persona,
             modo_conector=ModoConector.MANUAL,
             estado=estado,
             **campos,
         )
+
+    def autorizar(self, persona=None, finalidad=F.HABILITACION_INGRESO):
+        return services.registrar_autorizacion(
+            persona=persona or self.persona,
+            finalidad=finalidad,
+            texto="Autorizo la consulta de mis antecedentes penales.",
+            version="1.0",
+            medio=MedioAutorizacion.PORTAL,
+            referencia_evidencia="",
+            otorgada_en=date.today(),
+            actor=self.usuario,
+        )
+
+    def iniciar(self, modo="manual", persona=None, **kwargs):
+        with override_settings(ANTECEDENTES_CONECTOR_MODE=modo):
+            return services.iniciar_verificacion(persona=persona or self.persona, actor=self.usuario, **kwargs)
 
 
 class MaquinaEstadosTests(BaseAntecedentesTests):
@@ -254,10 +288,12 @@ class ConsultaProveedorTests(BaseAntecedentesTests):
 
 class IniciarVerificacionTests(BaseAntecedentesTests):
     def test_modo_manual_deja_la_verificacion_lista_con_una_consulta(self):
-        with override_settings(ANTECEDENTES_CONECTOR_MODE="manual"):
-            verificacion = services.iniciar_verificacion(persona=self.persona, actor=self.usuario)
+        self.autorizar()
+
+        verificacion, creada = self.iniciar("manual")
 
         verificacion.refresh_from_db()
+        self.assertTrue(creada)
         self.assertEqual(verificacion.estado, E.LISTA)
         self.assertEqual(verificacion.modo_conector, ModoConector.MANUAL)
         self.assertEqual(
@@ -270,15 +306,17 @@ class IniciarVerificacionTests(BaseAntecedentesTests):
         )
 
     def test_modo_manual_no_encola_consulta_asistida(self):
-        with override_settings(ANTECEDENTES_CONECTOR_MODE="manual"):
-            with self.captureOnCommitCallbacks(execute=True) as callbacks:
-                services.iniciar_verificacion(persona=self.persona, actor=self.usuario)
+        self.autorizar()
+
+        with self.captureOnCommitCallbacks(execute=True) as callbacks:
+            self.iniciar("manual")
 
         self.assertEqual(callbacks, [])
 
     def test_modo_asistido_llega_a_captcha_requerido(self):
-        with override_settings(ANTECEDENTES_CONECTOR_MODE="asistido"):
-            verificacion = services.iniciar_verificacion(persona=self.persona, actor=self.usuario)
+        self.autorizar()
+
+        verificacion, _ = self.iniciar("asistido")
 
         verificacion.refresh_from_db()
         self.assertEqual(verificacion.estado, E.CAPTCHA_REQUERIDO)
@@ -290,8 +328,8 @@ class IniciarVerificacionTests(BaseAntecedentesTests):
     def test_modo_asistido_aparece_en_la_bandeja(self):
         rol = Rol.objects.create(codigo="revisor-prueba", nombre="Revisor de prueba")
         RolAsignado.objects.create(usuario=self.usuario, organizacion=self.organizacion, rol=rol)
-        with override_settings(ANTECEDENTES_CONECTOR_MODE="asistido"):
-            verificacion = services.iniciar_verificacion(persona=self.persona, actor=self.usuario)
+        self.autorizar()
+        verificacion, _ = self.iniciar("asistido")
         self.client.force_login(self.usuario)
 
         respuesta = self.client.get(reverse("antecedentes:bandeja"))
@@ -311,14 +349,17 @@ class IniciarVerificacionTests(BaseAntecedentesTests):
 
         self.assertEqual(
             {v.estado for v in respuesta.context["verificaciones"]},
-            {E.LISTA, E.CAPTCHA_REQUERIDO, E.PDF_RECIBIDO, E.REQUIERE_REVISION, E.AUTENTICIDAD_PENDIENTE, E.FALLIDA},
+            {
+                E.AUTORIZACION_PENDIENTE, E.LISTA, E.CAPTCHA_REQUERIDO, E.PDF_RECIBIDO,
+                E.REQUIERE_REVISION, E.AUTENTICIDAD_PENDIENTE, E.FALLIDA,
+            },
         )
 
 
 class FlujoManualTests(BaseAntecedentesTests):
     def iniciar_manual(self):
-        with override_settings(ANTECEDENTES_CONECTOR_MODE="manual"):
-            return services.iniciar_verificacion(persona=self.persona, actor=self.usuario)
+        self.autorizar()
+        return self.iniciar("manual")[0]
 
     def test_registrar_resultado_manual_pasa_por_pdf_recibido_y_queda_en_revision(self):
         verificacion = self.iniciar_manual()
@@ -465,8 +506,7 @@ class FlujoManualTests(BaseAntecedentesTests):
         )
         self.assertFalse(calcular_habilitacion(self.persona).habilitado)
 
-        with override_settings(ANTECEDENTES_CONECTOR_MODE="manual"):
-            verificacion = services.iniciar_verificacion(persona=self.persona, actor=self.usuario)
+        verificacion = self.iniciar_manual()
         self.assertEqual(verificacion.estado, E.LISTA)
         services.registrar_resultado_manual(
             verificacion=verificacion, actor=self.usuario, resultado=ResultadoAntecedentes.NO
@@ -506,6 +546,445 @@ class FlujoManualTests(BaseAntecedentesTests):
                 if presente:
                     self.assertContains(respuesta, presente)
                 self.assertNotContains(respuesta, ausente)
+
+
+class AutorizacionGatingTests(BaseAntecedentesTests):
+    def test_sin_autorizacion_queda_pendiente_y_el_conector_no_arranca(self):
+        for modo in ("manual", "asistido"):
+            with self.subTest(modo=modo):
+                persona = self.crear_persona()
+
+                with self.captureOnCommitCallbacks(execute=False) as callbacks:
+                    verificacion, creada = self.iniciar(modo, persona=persona)
+
+                verificacion.refresh_from_db()
+                self.assertTrue(creada)
+                self.assertEqual(verificacion.estado, E.AUTORIZACION_PENDIENTE)
+                self.assertIsNone(verificacion.autorizacion)
+                self.assertEqual(verificacion.finalidad, F.HABILITACION_INGRESO)
+                self.assertEqual(verificacion.solicitante, self.usuario)
+                self.assertEqual(callbacks, [])
+                self.assertEqual(
+                    list(verificacion.ejecuciones.order_by("created_at").values_list("estado_resultante", flat=True)),
+                    [E.AUTORIZACION_PENDIENTE],
+                )
+                consulta = verificacion.consultas_proveedor.get()
+                self.assertEqual((consulta.estado, consulta.intentos), (EstadoConsulta.PENDIENTE, 0))
+
+    def test_con_autorizacion_valida_avanza_segun_el_conector(self):
+        autorizacion = self.autorizar()
+
+        manual, _ = self.iniciar("manual", persona=self.persona)
+        asistido_persona = self.crear_persona()
+        self.autorizar(persona=asistido_persona)
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            asistido, _ = self.iniciar("asistido", persona=asistido_persona)
+
+        manual.refresh_from_db()
+        asistido.refresh_from_db()
+        self.assertEqual((manual.estado, manual.autorizacion), (E.LISTA, autorizacion))
+        self.assertEqual(asistido.estado, E.CAPTCHA_REQUERIDO)
+        self.assertEqual(asistido.autorizacion.persona, asistido_persona)
+        self.assertEqual(len(callbacks), 1)
+
+    def test_autorizacion_revocada_otra_organizacion_u_otra_finalidad_no_cuentan(self):
+        otra_organizacion = Organizacion.objects.create(nombre="Otra organización")
+        base = dict(
+            texto="Texto", version="1.0", medio=MedioAutorizacion.PORTAL, otorgada_en=date.today(),
+            registrada_por=self.usuario,
+        )
+        persona_revocada = self.crear_persona()
+        persona_otra_org = self.crear_persona()
+        persona_otra_finalidad = self.crear_persona()
+        AutorizacionDatos.objects.create(
+            organizacion=self.organizacion, persona=persona_revocada, finalidad=F.HABILITACION_INGRESO,
+            revocada_en=timezone.now(), motivo_revocacion="Retiró su consentimiento.", **base,
+        )
+        AutorizacionDatos.objects.create(
+            organizacion=otra_organizacion, persona=persona_otra_org, finalidad=F.HABILITACION_INGRESO, **base
+        )
+        AutorizacionDatos.objects.create(
+            organizacion=self.organizacion, persona=persona_otra_finalidad, finalidad=F.RENOVACION, **base
+        )
+
+        for persona in (persona_revocada, persona_otra_org, persona_otra_finalidad):
+            with self.subTest(persona=persona.numero_documento):
+                verificacion, _ = self.iniciar("manual", persona=persona)
+
+                self.assertEqual(verificacion.estado, E.AUTORIZACION_PENDIENTE)
+                self.assertIsNone(verificacion.autorizacion)
+
+    def test_finalidad_invalida_se_rechaza_sin_cambios(self):
+        with self.assertRaises(DomainError):
+            self.iniciar("manual", finalidad="OTRA")
+
+        self.assertEqual(VerificacionAntecedentes.objects.count(), 0)
+
+
+class RegistrarAutorizacionTests(BaseAntecedentesTests):
+    def datos(self, **cambios):
+        datos = dict(
+            persona=self.persona, finalidad=F.HABILITACION_INGRESO, texto="Autorizo la consulta.", version="1.0",
+            medio=MedioAutorizacion.PORTAL, referencia_evidencia="", otorgada_en=date.today(), actor=self.usuario,
+        )
+        datos.update(cambios)
+        return datos
+
+    def test_registra_con_todos_sus_datos_y_audita(self):
+        autorizacion = services.registrar_autorizacion(
+            **self.datos(medio=MedioAutorizacion.DOCUMENTO_FIRMADO, referencia_evidencia="Formulario F-12")
+        )
+
+        autorizacion.refresh_from_db()
+        self.assertEqual(autorizacion.organizacion, self.organizacion)
+        self.assertEqual(autorizacion.persona, self.persona)
+        self.assertEqual(
+            (autorizacion.finalidad, autorizacion.texto, autorizacion.version, autorizacion.medio),
+            (F.HABILITACION_INGRESO, "Autorizo la consulta.", "1.0", MedioAutorizacion.DOCUMENTO_FIRMADO),
+        )
+        self.assertEqual(autorizacion.referencia_evidencia, "Formulario F-12")
+        self.assertEqual((autorizacion.otorgada_en, autorizacion.registrada_por), (date.today(), self.usuario))
+        self.assertIsNone(autorizacion.revocada_en)
+        evento = EventoAuditoria.objects.get(accion="AUTORIZACION_REGISTRADA")
+        self.assertEqual(
+            (evento.recurso_id, evento.actor, evento.organizacion), (str(autorizacion.pk), self.usuario, self.organizacion)
+        )
+
+    def test_mueve_a_lista_las_pendientes_de_la_misma_persona_y_finalidad(self):
+        pendiente, _ = self.iniciar("manual")
+        renovacion, _ = self.iniciar("manual", finalidad=F.RENOVACION)
+        otra_persona, _ = self.iniciar("manual", persona=self.crear_persona())
+
+        autorizacion = self.autorizar()
+
+        for v in (pendiente, renovacion, otra_persona):
+            v.refresh_from_db()
+        self.assertEqual((pendiente.estado, pendiente.autorizacion), (E.LISTA, autorizacion))
+        self.assertEqual(
+            list(pendiente.ejecuciones.order_by("created_at").values_list("estado_resultante", flat=True)),
+            [E.AUTORIZACION_PENDIENTE, E.LISTA],
+        )
+        self.assertEqual(renovacion.estado, E.AUTORIZACION_PENDIENTE)
+        self.assertEqual(otra_persona.estado, E.AUTORIZACION_PENDIENTE)
+
+    def test_en_modo_asistido_la_pendiente_continua_hasta_captcha(self):
+        pendiente, _ = self.iniciar("asistido")
+
+        with override_settings(ANTECEDENTES_CONECTOR_MODE="asistido"):
+            with self.captureOnCommitCallbacks(execute=False) as callbacks:
+                self.autorizar()
+
+        pendiente.refresh_from_db()
+        self.assertEqual(pendiente.estado, E.CAPTCHA_REQUERIDO)
+        self.assertEqual(pendiente.modo_conector, ModoConector.ASISTIDO)
+        self.assertEqual(len(callbacks), 1)
+
+    def test_referencia_es_obligatoria_para_documento_firmado_y_otro(self):
+        for medio in (MedioAutorizacion.DOCUMENTO_FIRMADO, MedioAutorizacion.OTRO):
+            for referencia in ("", "   "):
+                with self.subTest(medio=medio, referencia=referencia):
+                    with self.assertRaises(DomainError):
+                        services.registrar_autorizacion(**self.datos(medio=medio, referencia_evidencia=referencia))
+
+        self.assertEqual(AutorizacionDatos.objects.count(), 0)
+        self.assertEqual(EventoAuditoria.objects.filter(accion="AUTORIZACION_REGISTRADA").count(), 0)
+
+    def test_portal_no_exige_referencia(self):
+        autorizacion = services.registrar_autorizacion(**self.datos(medio=MedioAutorizacion.PORTAL))
+
+        self.assertEqual(autorizacion.referencia_evidencia, "")
+
+    def test_datos_invalidos_se_rechazan_sin_cambios(self):
+        pendiente, _ = self.iniciar("manual")
+        invalidos = [
+            dict(texto="  "), dict(version=""), dict(finalidad="OTRA"), dict(medio="TELEPATIA"), dict(otorgada_en=None),
+        ]
+        for cambios in invalidos:
+            with self.subTest(cambios=cambios):
+                with self.assertRaises(DomainError):
+                    services.registrar_autorizacion(**self.datos(**cambios))
+
+        pendiente.refresh_from_db()
+        self.assertEqual(pendiente.estado, E.AUTORIZACION_PENDIENTE)
+        self.assertEqual(AutorizacionDatos.objects.count(), 0)
+
+
+class RevocarAutorizacionTests(BaseAntecedentesTests):
+    def test_cancela_las_no_terminales_con_el_motivo_y_respeta_las_terminales(self):
+        autorizacion = self.autorizar()
+        vivas = {
+            estado: self.crear_verificacion(estado=estado, autorizacion=autorizacion)
+            for estado in (E.LISTA, E.CAPTCHA_REQUERIDO, E.REQUIERE_REVISION)
+        }
+        validada = self.crear_verificacion(estado=E.VALIDADA, autorizacion=autorizacion)
+        ajena = self.crear_verificacion(estado=E.LISTA)
+
+        services.revocar_autorizacion(autorizacion=autorizacion, motivo="Retiró su consentimiento.", actor=self.usuario)
+
+        autorizacion.refresh_from_db()
+        self.assertIsNotNone(autorizacion.revocada_en)
+        self.assertEqual(autorizacion.motivo_revocacion, "Retiró su consentimiento.")
+        for estado, verificacion in vivas.items():
+            with self.subTest(estado=estado):
+                verificacion.refresh_from_db()
+                self.assertEqual(verificacion.estado, E.CANCELADA)
+                ultima = verificacion.ejecuciones.order_by("-created_at").first()
+                self.assertIn("Autorización revocada: Retiró su consentimiento.", ultima.detalle)
+        validada.refresh_from_db()
+        ajena.refresh_from_db()
+        self.assertEqual((validada.estado, ajena.estado), (E.VALIDADA, E.LISTA))
+        evento = EventoAuditoria.objects.get(accion="AUTORIZACION_REVOCADA")
+        self.assertEqual((evento.recurso_id, evento.actor), (str(autorizacion.pk), self.usuario))
+        self.assertIn("Retiró su consentimiento.", evento.motivo)
+
+    def test_tras_revocar_una_nueva_solicitud_vuelve_a_pedir_autorizacion(self):
+        autorizacion = self.autorizar()
+        services.revocar_autorizacion(autorizacion=autorizacion, motivo="Retiró su consentimiento.", actor=self.usuario)
+
+        verificacion, _ = self.iniciar("manual")
+
+        self.assertEqual(verificacion.estado, E.AUTORIZACION_PENDIENTE)
+
+    def test_revocar_dos_veces_o_sin_motivo_se_rechaza_sin_cambios(self):
+        autorizacion = self.autorizar()
+        viva = self.crear_verificacion(estado=E.LISTA, autorizacion=autorizacion)
+        eventos = EventoAuditoria.objects.count()
+        for motivo in ("", "   "):
+            with self.subTest(motivo=motivo):
+                with self.assertRaises(DomainError):
+                    services.revocar_autorizacion(autorizacion=autorizacion, motivo=motivo, actor=self.usuario)
+        autorizacion.refresh_from_db()
+        viva.refresh_from_db()
+        self.assertIsNone(autorizacion.revocada_en)
+        self.assertEqual(viva.estado, E.LISTA)
+        self.assertEqual(EventoAuditoria.objects.count(), eventos)
+
+        services.revocar_autorizacion(autorizacion=autorizacion, motivo="Primera vez.", actor=self.usuario)
+        autorizacion.refresh_from_db()
+        revocada_en = autorizacion.revocada_en
+        eventos = EventoAuditoria.objects.count()
+
+        with self.assertRaises(DomainError):
+            services.revocar_autorizacion(autorizacion=autorizacion, motivo="Segunda vez.", actor=self.usuario)
+
+        autorizacion.refresh_from_db()
+        self.assertEqual((autorizacion.revocada_en, autorizacion.motivo_revocacion), (revocada_en, "Primera vez."))
+        self.assertEqual(EventoAuditoria.objects.count(), eventos)
+
+
+class IdempotenciaTests(BaseAntecedentesTests):
+    def conteos(self):
+        return (
+            VerificacionAntecedentes.objects.count(),
+            ConsultaProveedor.objects.count(),
+            EjecucionConector.objects.count(),
+            EventoAuditoria.objects.count(),
+        )
+
+    def test_se_genera_una_clave_unica_por_verificacion(self):
+        primera, _ = self.iniciar("manual")
+        segunda, _ = self.iniciar("manual", persona=self.crear_persona())
+
+        self.assertRegex(primera.clave_idempotencia, r"^[0-9a-f]{32}$")
+        self.assertNotEqual(primera.clave_idempotencia, segunda.clave_idempotencia)
+
+    def test_misma_clave_devuelve_la_operacion_existente_sin_repetir_nada(self):
+        self.autorizar()
+        original, creada = self.iniciar("asistido", clave_idempotencia="clave-123")
+        self.assertTrue(creada)
+        antes = self.conteos()
+
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            repetida, creada = self.iniciar("asistido", clave_idempotencia="clave-123")
+
+        self.assertEqual((repetida.pk, creada), (original.pk, False))
+        self.assertEqual(self.conteos(), antes)
+        self.assertEqual(callbacks, [])
+
+    def test_clave_usada_por_otra_persona_o_finalidad_se_rechaza(self):
+        self.iniciar("manual", clave_idempotencia="clave-123")
+        antes = self.conteos()
+
+        with self.assertRaises(DomainError):
+            self.iniciar("manual", persona=self.crear_persona(), clave_idempotencia="clave-123")
+        with self.assertRaises(DomainError):
+            self.iniciar("manual", finalidad=F.RENOVACION, clave_idempotencia="clave-123")
+
+        self.assertEqual(self.conteos(), antes)
+
+    def test_segunda_solicitud_sin_clave_con_una_activa_devuelve_la_existente(self):
+        for autorizada in (False, True):
+            with self.subTest(autorizada=autorizada):
+                persona = self.crear_persona()
+                if autorizada:
+                    self.autorizar(persona=persona)
+                original, _ = self.iniciar("manual", persona=persona)
+                antes = self.conteos()
+
+                repetida, creada = self.iniciar("manual", persona=persona)
+
+                self.assertEqual((repetida.pk, creada), (original.pk, False))
+                self.assertEqual(self.conteos(), antes)
+
+    def test_otra_finalidad_no_es_duplicado(self):
+        primera, _ = self.iniciar("manual")
+
+        segunda, creada = self.iniciar("manual", finalidad=F.RENOVACION)
+
+        self.assertTrue(creada)
+        self.assertNotEqual(primera.pk, segunda.pk)
+
+    def test_tras_cerrarse_la_activa_se_puede_crear_una_nueva(self):
+        for estado_final in (E.CANCELADA, E.VALIDADA, E.VENCIDA, E.FALLIDA):
+            with self.subTest(estado=estado_final):
+                persona = self.crear_persona()
+                activa, _ = self.iniciar("manual", persona=persona)
+                VerificacionAntecedentes.objects.filter(pk=activa.pk).update(estado=estado_final)
+
+                nueva, creada = self.iniciar("manual", persona=persona)
+
+                self.assertTrue(creada)
+                self.assertNotEqual(nueva.pk, activa.pk)
+
+    def test_la_base_impide_dos_activas_para_la_misma_persona_y_finalidad(self):
+        self.crear_verificacion(estado=E.LISTA, persona=self.persona)
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self.crear_verificacion(estado=E.REQUIERE_REVISION, persona=self.persona)
+
+        self.crear_verificacion(estado=E.CANCELADA, persona=self.persona)
+        self.crear_verificacion(estado=E.LISTA, persona=self.persona, finalidad=F.RENOVACION)
+
+    def test_carrera_entre_dos_solicitudes_devuelve_la_existente(self):
+        original, _ = self.iniciar("manual")
+        buscar = services._solicitud_existente
+        llamadas = []
+
+        def primera_vez_no_ve_nada(*args, **kwargs):
+            llamadas.append(1)
+            return None if len(llamadas) == 1 else buscar(*args, **kwargs)
+
+        with mock.patch.object(services, "_solicitud_existente", side_effect=primera_vez_no_ve_nada):
+            repetida, creada = self.iniciar("manual")
+
+        self.assertEqual((repetida.pk, creada), (original.pk, False))
+        self.assertEqual(VerificacionAntecedentes.objects.count(), 1)
+
+
+class AutorizacionUITests(BaseAntecedentesTests):
+    def setUp(self):
+        super().setUp()
+        rol = Rol.objects.create(codigo="revisor-prueba", nombre="Revisor de prueba")
+        RolAsignado.objects.create(usuario=self.usuario, organizacion=self.organizacion, rol=rol)
+        self.client.force_login(self.usuario)
+
+    def iniciar_por_vista(self, persona=None):
+        return self.client.post(reverse("antecedentes:iniciar", args=[(persona or self.persona).pk]), follow=True)
+
+    def datos_modal(self, **cambios):
+        datos = dict(
+            medio=MedioAutorizacion.PORTAL, texto="Autorizo la consulta de mis antecedentes.", version="1.0",
+            referencia_evidencia="", otorgada_en=date.today().isoformat(),
+        )
+        datos.update(cambios)
+        return datos
+
+    def test_iniciar_dos_veces_desde_la_vista_deja_una_sola_verificacion(self):
+        primera = self.iniciar_por_vista()
+        segunda = self.iniciar_por_vista()
+
+        self.assertEqual(VerificacionAntecedentes.objects.count(), 1)
+        verificacion = VerificacionAntecedentes.objects.get()
+        self.assertEqual(primera.redirect_chain[-1][0], reverse("antecedentes:detalle", args=[verificacion.pk]))
+        self.assertEqual(segunda.redirect_chain[-1][0], reverse("antecedentes:detalle", args=[verificacion.pk]))
+        self.assertContains(segunda, "Ya existía una solicitud activa")
+
+    def test_detalle_pendiente_muestra_el_aviso_y_el_boton_de_autorizacion(self):
+        self.iniciar_por_vista()
+        verificacion = VerificacionAntecedentes.objects.get()
+
+        respuesta = self.client.get(reverse("antecedentes:detalle", args=[verificacion.pk]))
+
+        self.assertContains(respuesta, "Autorización pendiente")
+        self.assertContains(respuesta, reverse("antecedentes:autorizar", args=[verificacion.pk]))
+        self.assertContains(respuesta, "Habilitación de ingreso a instalaciones")
+
+    def test_detalle_con_autorizacion_muestra_sus_datos_y_no_el_boton(self):
+        autorizacion = self.autorizar()
+        verificacion, _ = self.iniciar("manual")
+
+        respuesta = self.client.get(reverse("antecedentes:detalle", args=[verificacion.pk]))
+
+        self.assertContains(respuesta, "Portal")
+        self.assertContains(respuesta, autorizacion.version)
+        self.assertNotContains(respuesta, reverse("antecedentes:autorizar", args=[verificacion.pk]))
+
+    def test_modal_registra_la_autorizacion_y_el_caso_pasa_a_lista(self):
+        self.iniciar_por_vista()
+        verificacion = VerificacionAntecedentes.objects.get()
+        url = reverse("antecedentes:autorizar", args=[verificacion.pk])
+
+        modal = self.client.get(url, HTTP_HX_REQUEST="true")
+        respuesta = self.client.post(url, self.datos_modal(), HTTP_HX_REQUEST="true")
+
+        self.assertEqual(modal.status_code, 200)
+        self.assertContains(modal, "Autorización")
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertEqual(respuesta["HX-Redirect"], reverse("antecedentes:detalle", args=[verificacion.pk]))
+        verificacion.refresh_from_db()
+        autorizacion = AutorizacionDatos.objects.get()
+        self.assertEqual(verificacion.estado, E.LISTA)
+        self.assertEqual(verificacion.autorizacion, autorizacion)
+        self.assertEqual((autorizacion.persona, autorizacion.registrada_por), (self.persona, self.usuario))
+        self.assertEqual(autorizacion.finalidad, verificacion.finalidad)
+
+    def test_modal_sin_referencia_para_documento_firmado_muestra_el_error_y_no_cambia_nada(self):
+        self.iniciar_por_vista()
+        verificacion = VerificacionAntecedentes.objects.get()
+        url = reverse("antecedentes:autorizar", args=[verificacion.pk])
+
+        respuesta = self.client.post(
+            url, self.datos_modal(medio=MedioAutorizacion.DOCUMENTO_FIRMADO), HTTP_HX_REQUEST="true"
+        )
+
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertNotIn("HX-Redirect", respuesta)
+        self.assertContains(respuesta, "referencia")
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.AUTORIZACION_PENDIENTE)
+        self.assertEqual(AutorizacionDatos.objects.count(), 0)
+
+    def test_modal_solo_para_verificaciones_que_esperan_autorizacion(self):
+        verificacion = self.crear_verificacion(estado=E.LISTA)
+
+        respuesta = self.client.post(
+            reverse("antecedentes:autorizar", args=[verificacion.pk]), self.datos_modal(), HTTP_HX_REQUEST="true"
+        )
+
+        self.assertNotIn("HX-Redirect", respuesta)
+        self.assertEqual(AutorizacionDatos.objects.count(), 0)
+
+    def test_modal_respeta_la_organizacion_y_exige_htmx(self):
+        otra = Organizacion.objects.create(nombre="Otra organización")
+        ajena = self.crear_verificacion(estado=E.AUTORIZACION_PENDIENTE, persona=self.crear_persona(otra))
+        propia = self.crear_verificacion(estado=E.AUTORIZACION_PENDIENTE)
+
+        ajena_resp = self.client.get(reverse("antecedentes:autorizar", args=[ajena.pk]), HTTP_HX_REQUEST="true")
+        sin_htmx = self.client.get(reverse("antecedentes:autorizar", args=[propia.pk]))
+
+        self.assertEqual(ajena_resp.status_code, 404)
+        self.assertRedirects(sin_htmx, reverse("antecedentes:detalle", args=[propia.pk]))
+
+    def test_api_repetida_devuelve_la_misma_operacion(self):
+        url = reverse("antecedentes:api-iniciar", args=[self.persona.pk])
+
+        primera = self.client.post(url)
+        segunda = self.client.post(url)
+
+        self.assertEqual((primera.status_code, segunda.status_code), (202, 200))
+        self.assertEqual(primera.json()["id"], segunda.json()["id"])
+        self.assertEqual(primera.json()["finalidad"], F.HABILITACION_INGRESO)
+        self.assertEqual(VerificacionAntecedentes.objects.count(), 1)
 
 
 class MigracionEstadosTests(TestCase):
@@ -576,6 +1055,7 @@ class MigracionEstadosTests(TestCase):
 class MigracionDatosTests(TransactionTestCase):
     ANTERIOR = [("antecedentes", "0002_alter_ejecucionconector_estado_resultante_and_more")]
     NUEVA = [("antecedentes", "0003_nueva_maquina_estados")]
+    AUTORIZACIONES = [("antecedentes", "0004_autorizacion_finalidad_idempotencia")]
 
     def migrar(self, destino):
         ejecutor = MigrationExecutor(connection)
@@ -616,6 +1096,36 @@ class MigracionDatosTests(TransactionTestCase):
         self.assertEqual(apps_reverso.get_model("antecedentes", "VerificacionAntecedentes").objects.get().estado, "REQUIERE_INTERVENCION")
         self.assertEqual(apps_reverso.get_model("antecedentes", "ConsultaProveedor").objects.get().estado, "REQUIERE_INTERVENCION")
         self.assertEqual(apps_reverso.get_model("antecedentes", "EjecucionConector").objects.count(), 1)
+
+
+    def test_autorizaciones_asigna_claves_y_deja_una_sola_solicitud_activa_por_persona(self):
+        apps_antes = self.migrar(self.NUEVA)
+        Org = apps_antes.get_model("identidad", "Organizacion")
+        Per = apps_antes.get_model("personas", "Persona")
+        Ver = apps_antes.get_model("antecedentes", "VerificacionAntecedentes")
+        org = Org.objects.create(nombre="Org autorizaciones")
+        persona = Per.objects.create(
+            organizacion=org, tipo_documento="CEDULA", numero_documento="4444444444", nombres="Ana", apellidos="Doble"
+        )
+        vieja = Ver.objects.create(organizacion=org, persona=persona, modo_conector="MANUAL", estado="LISTA")
+        nueva = Ver.objects.create(organizacion=org, persona=persona, modo_conector="MANUAL", estado="LISTA")
+        validada = Ver.objects.create(organizacion=org, persona=persona, modo_conector="MANUAL", estado="VALIDADA")
+        Ver.objects.filter(pk=vieja.pk).update(created_at=timezone.now() - timedelta(days=1))
+
+        apps_despues = self.migrar(self.AUTORIZACIONES)
+        Ver = apps_despues.get_model("antecedentes", "VerificacionAntecedentes")
+        Eje = apps_despues.get_model("antecedentes", "EjecucionConector")
+        estados = {v.pk: v for v in Ver.objects.all()}
+        self.assertEqual(
+            (estados[vieja.pk].estado, estados[nueva.pk].estado, estados[validada.pk].estado),
+            ("CANCELADA", "LISTA", "VALIDADA"),
+        )
+        self.assertEqual({v.finalidad for v in estados.values()}, {"HABILITACION_INGRESO"})
+        claves = [v.clave_idempotencia for v in estados.values()]
+        self.assertTrue(all(claves))
+        self.assertEqual(len(set(claves)), 3)
+        self.assertEqual(Eje.objects.filter(verificacion_id=vieja.pk).count(), 1)
+        self.assertEqual(Eje.objects.filter(verificacion_id=nueva.pk).count(), 0)
 
 
 class PdfSeguroTests(TestCase):

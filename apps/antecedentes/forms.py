@@ -1,6 +1,9 @@
+from datetime import date
+
 from django import forms
 
-from apps.antecedentes.models import EstadoVerificacion, ResultadoAntecedentes
+from apps.antecedentes.models import EstadoVerificacion, MedioAutorizacion, ResultadoAntecedentes
+from apps.core.forms import EstiloFormMixin
 
 
 class RegistrarResultadoManualForm(forms.Form):
@@ -27,3 +30,26 @@ class ValidarVerificacionForm(forms.Form):
         widget=forms.DateInput(attrs={"class": "sc-input", "type": "date"}),
     )
     comentario = forms.CharField(required=False, widget=forms.Textarea(attrs={"class": "sc-input", "rows": 2}))
+
+
+class AutorizacionDatosForm(EstiloFormMixin, forms.Form):
+    """La finalidad no se elige: es la de la verificación que espera la autorización."""
+
+    medio = forms.ChoiceField(choices=MedioAutorizacion.choices, initial=MedioAutorizacion.DOCUMENTO_FIRMADO)
+    referencia_evidencia = forms.CharField(
+        label="Referencia de la evidencia (obligatoria si es documento firmado u otro)", required=False, max_length=255
+    )
+    otorgada_en = forms.DateField(
+        label="Fecha en que se otorgó",
+        widget=forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+        initial=date.today,
+    )
+    version = forms.CharField(label="Versión del texto", max_length=30, initial="1.0")
+    texto = forms.CharField(label="Texto aceptado por la persona", widget=forms.Textarea(attrs={"rows": 4}))
+
+    def __init__(self, *args, finalidad_label="", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["texto"].initial = (
+            "Autorizo la consulta de mis antecedentes penales ante el Ministerio del Interior "
+            f"con la finalidad de: {finalidad_label.lower()}."
+        )
