@@ -25,7 +25,7 @@ Branch: `feat/antecedentes` (stacked on `feat/cuentas-acceso-portal`). Baseline 
 - T5 — S7, S10 — PDF pipeline: validation/quarantine, text extraction (pypdf), identity match, custody, signature presence; private storage + authenticated download — done, commit 71fcccb (see L8)
 - T6 — S2, S4, S8, S10 — UI: inbox by state, detail, drag & drop upload, review; API endpoints of S10 — done, commit 3a9e662 (see L9)
 - T7 — S9, S10 — validity from the certificate, renewal, habilitación integration, garita without detail — done, commit 2f32768 (see L10)
-- T8 — all — independent verification + constitution update — done (see L11)
+- T8 — all — independent verification + constitution update — done, commit 342843b (see L11)
 - T9 — FUTURE — Función Judicial source (hallazgo → revisión manual, L2 Q3 of the previous round); full cryptographic signature validation (pyHanko) and field encryption — not now
 
 ## Log
