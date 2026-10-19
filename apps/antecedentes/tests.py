@@ -3,6 +3,7 @@ from datetime import date, timedelta
 from itertools import count, product
 from unittest import mock
 
+from django.apps import apps as django_apps
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
@@ -64,6 +65,7 @@ class BaseAntecedentesTests(TestCase):
         self.usuario = Usuario.objects.create_user(
             email="revisor@example.com", nombre_completo="Revisor de antecedentes"
         )
+        self.dar_rol(self.usuario, "revisor_antecedentes")
         self.persona = Persona.objects.create(
             organizacion=self.organizacion,
             tipo_documento=TipoDocumento.CEDULA,
@@ -71,6 +73,16 @@ class BaseAntecedentesTests(TestCase):
             nombres="Persona",
             apellidos="Evaluada",
         )
+
+    def dar_rol(self, usuario, codigo, organizacion=None):
+        rol, _ = Rol.objects.get_or_create(codigo=codigo, defaults={"nombre": codigo})
+        return RolAsignado.objects.create(usuario=usuario, organizacion=organizacion or self.organizacion, rol=rol)
+
+    def crear_usuario(self, email, codigo=None, organizacion=None):
+        usuario = Usuario.objects.create_user(email=email, nombre_completo=email)
+        if codigo:
+            self.dar_rol(usuario, codigo, organizacion)
+        return usuario
 
     def crear_persona(self, organizacion=None):
         return Persona.objects.create(
@@ -515,7 +527,7 @@ class FlujoManualTests(BaseAntecedentesTests):
         self.assertFalse(calcular_habilitacion(self.persona).habilitado)
         services.validar_verificacion(
             verificacion=verificacion,
-            revisor=self.usuario,
+            revisor=self.crear_usuario("segundo@example.com", "revisor_antecedentes"),
             decision=E.VALIDADA,
             vigente_hasta=date.today() + timedelta(days=30),
         )
@@ -525,8 +537,6 @@ class FlujoManualTests(BaseAntecedentesTests):
         self.assertTrue(calcular_habilitacion(self.persona).habilitado)
 
     def test_detalle_muestra_acciones_segun_estado(self):
-        rol = Rol.objects.create(codigo="revisor-prueba", nombre="Revisor de prueba")
-        RolAsignado.objects.create(usuario=self.usuario, organizacion=self.organizacion, rol=rol)
         self.client.force_login(self.usuario)
         esperado = {
             E.LISTA: ('value="cargar_resultado"', 'value="validar"'),
@@ -874,8 +884,6 @@ class IdempotenciaTests(BaseAntecedentesTests):
 class AutorizacionUITests(BaseAntecedentesTests):
     def setUp(self):
         super().setUp()
-        rol = Rol.objects.create(codigo="revisor-prueba", nombre="Revisor de prueba")
-        RolAsignado.objects.create(usuario=self.usuario, organizacion=self.organizacion, rol=rol)
         self.client.force_login(self.usuario)
 
     def iniciar_por_vista(self, persona=None):
@@ -972,7 +980,7 @@ class AutorizacionUITests(BaseAntecedentesTests):
         ajena_resp = self.client.get(reverse("antecedentes:autorizar", args=[ajena.pk]), HTTP_HX_REQUEST="true")
         sin_htmx = self.client.get(reverse("antecedentes:autorizar", args=[propia.pk]))
 
-        self.assertEqual(ajena_resp.status_code, 404)
+        self.assertEqual(ajena_resp.status_code, 403)
         self.assertRedirects(sin_htmx, reverse("antecedentes:detalle", args=[propia.pk]))
 
     def test_api_repetida_devuelve_la_misma_operacion(self):
@@ -985,6 +993,371 @@ class AutorizacionUITests(BaseAntecedentesTests):
         self.assertEqual(primera.json()["id"], segunda.json()["id"])
         self.assertEqual(primera.json()["finalidad"], F.HABILITACION_INGRESO)
         self.assertEqual(VerificacionAntecedentes.objects.count(), 1)
+
+
+class PermisosAntecedentesTests(BaseAntecedentesTests):
+    """S8: rol dedicado + cuatro ojos; ANT-011 auditoría de lecturas."""
+
+    def setUp(self):
+        super().setUp()
+        self.operador = self.crear_usuario("operador@example.com", "operador_antecedentes")
+        self.revisor2 = self.crear_usuario("revisor2@example.com", "revisor_antecedentes")
+        self.otra_org = Organizacion.objects.create(nombre="Otra organización")
+        self.garita = self.crear_usuario("garita@example.com", "seguridad_garita")
+        self.ajeno = self.crear_usuario("ajeno@example.com", "revisor_antecedentes", self.otra_org)
+        self.sin_roles = self.crear_usuario("sinroles@example.com")
+        self.superusuario = Usuario.objects.create_superuser(email="super@example.com", password="x")
+
+    def no_autorizados(self):
+        return {
+            "garita": self.garita,
+            "revisor de otra organización": self.ajeno,
+            "sin roles": self.sin_roles,
+            "superusuario sin roles": self.superusuario,
+        }
+
+    def verificacion_en_revision(self, cargado_por=None, **campos):
+        return self.crear_verificacion(
+            estado=E.REQUIERE_REVISION,
+            resultado=ResultadoAntecedentes.SI,
+            numero_certificado="CERT-77-RESERVADO",
+            cargado_por=cargado_por,
+            **campos,
+        )
+
+    def lecturas(self, verificacion=None):
+        eventos = EventoAuditoria.objects.filter(accion="LEER_ANTECEDENTES")
+        return eventos.filter(recurso_id=str(verificacion.pk)) if verificacion else eventos
+
+    def datos_validar(self, **cambios):
+        datos = {
+            "accion": "validar",
+            "decision": E.VALIDADA,
+            "vigente_hasta": (date.today() + timedelta(days=30)).isoformat(),
+            "comentario": "",
+        }
+        datos.update(cambios)
+        return datos
+
+    # --- roles -----------------------------------------------------------
+
+    def test_asignar_rol_crea_el_rol_bajo_demanda_y_es_idempotente(self):
+        RolAsignado.objects.filter(rol__codigo="operador_antecedentes").delete()
+        Rol.objects.filter(codigo="operador_antecedentes").delete()
+        usuario = self.crear_usuario("nuevo@example.com")
+
+        for _ in range(2):
+            services.asignar_rol_antecedentes(
+                usuario=usuario, organizacion=self.organizacion, codigo="operador_antecedentes", actor=self.usuario
+            )
+
+        rol = Rol.objects.get(codigo="operador_antecedentes")
+        self.assertEqual(rol.nombre, "Operador de antecedentes")
+        asignacion = RolAsignado.objects.get(usuario=usuario, organizacion=self.organizacion, rol=rol)
+        self.assertTrue(asignacion.activo)
+        self.assertEqual(EventoAuditoria.objects.filter(accion="ROL_ANTECEDENTES_ASIGNADO").count(), 1)
+
+    def test_asignar_rol_reactiva_una_asignacion_inactiva_y_rechaza_codigos_ajenos(self):
+        asignacion = RolAsignado.objects.get(usuario=self.operador)
+        asignacion.activo = False
+        asignacion.save()
+
+        services.asignar_rol_antecedentes(
+            usuario=self.operador, organizacion=self.organizacion, codigo="operador_antecedentes", actor=self.usuario
+        )
+        with self.assertRaises(DomainError):
+            services.asignar_rol_antecedentes(
+                usuario=self.operador, organizacion=self.organizacion, codigo="seguridad_garita", actor=self.usuario
+            )
+
+        asignacion.refresh_from_db()
+        self.assertTrue(asignacion.activo)
+        self.assertEqual(RolAsignado.objects.filter(usuario=self.operador).count(), 1)
+
+    def test_la_migracion_crea_los_dos_roles_sin_duplicarlos_ni_pisar_los_existentes(self):
+        migracion = importlib.import_module("apps.antecedentes.migrations.0005_roles_antecedentes")
+        codigos = ["operador_antecedentes", "revisor_antecedentes"]
+        Rol.objects.filter(codigo="revisor_antecedentes").update(nombre="Nombre ajustado")
+        RolAsignado.objects.filter(rol__codigo="operador_antecedentes").delete()
+        Rol.objects.filter(codigo="operador_antecedentes").delete()
+
+        for _ in range(2):
+            migracion.crear_roles(django_apps, None)
+
+        self.assertEqual(Rol.objects.filter(codigo__in=codigos).count(), 2)
+        self.assertEqual(Rol.objects.get(codigo="operador_antecedentes").nombre, "Operador de antecedentes")
+        self.assertEqual(Rol.objects.get(codigo="revisor_antecedentes").nombre, "Nombre ajustado")
+
+    # --- operador --------------------------------------------------------
+
+    def test_operador_inicia_autoriza_y_carga_pero_no_ve_el_resultado(self):
+        self.client.force_login(self.operador)
+
+        self.client.post(reverse("antecedentes:iniciar", args=[self.persona.pk]))
+        verificacion = VerificacionAntecedentes.objects.get(persona=self.persona)
+        self.assertEqual(verificacion.estado, E.AUTORIZACION_PENDIENTE)
+        autorizada = self.client.post(
+            reverse("antecedentes:autorizar", args=[verificacion.pk]),
+            dict(
+                medio=MedioAutorizacion.PORTAL, texto="Autorizo.", version="1.0", referencia_evidencia="",
+                otorgada_en=date.today().isoformat(),
+            ),
+            HTTP_HX_REQUEST="true",
+        )
+        self.assertEqual(autorizada.status_code, 200)
+        self.client.post(
+            reverse("antecedentes:detalle", args=[verificacion.pk]),
+            {
+                "accion": "cargar_resultado",
+                "resultado": ResultadoAntecedentes.SI,
+                "numero_certificado": "CERT-77-RESERVADO",
+                "proveedor": "Ministerio del Interior",
+                "comentario": "",
+            },
+        )
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.REQUIERE_REVISION)
+        self.assertEqual(verificacion.cargado_por, self.operador)
+        respuesta = self.client.get(reverse("antecedentes:detalle", args=[verificacion.pk]))
+        self.assertEqual(respuesta.status_code, 200)
+        for reservado in ("hallazgos", "CERT-77-RESERVADO", "Registra antecedentes"):
+            self.assertNotContains(respuesta, reservado)
+        self.assertNotContains(respuesta, 'value="validar"')
+
+    def test_api_del_operador_oculta_resultado_y_datos_del_certificado(self):
+        verificacion = self.verificacion_en_revision()
+        consulta = ConsultaProveedor.objects.create(
+            verificacion=verificacion, proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR
+        )
+        consulta.documentos.create(
+            nombre_original="cert.pdf", numero_certificado="CERT-77-RESERVADO", nombre_extraido="NOMBRE EXTRAIDO",
+            identificacion_extraida="1799999999", detalle_validacion="Coincide: NOMBRE EXTRAIDO",
+        )
+        url = reverse("antecedentes:api-detalle", args=[verificacion.pk])
+
+        self.client.force_login(self.operador)
+        operador = self.client.get(url)
+        self.client.force_login(self.revisor2)
+        revisor = self.client.get(url)
+
+        self.assertEqual(operador.status_code, 200)
+        self.assertEqual(operador.json()["estado"], E.REQUIERE_REVISION)
+        self.assertNotIn("resultado", operador.json())
+        for reservado in ("CERT-77-RESERVADO", "NOMBRE EXTRAIDO", "1799999999"):
+            self.assertNotIn(reservado, operador.content.decode())
+        self.assertEqual(revisor.json()["resultado"], ResultadoAntecedentes.SI)
+        documento = revisor.json()["consultas_proveedor"][0]["documentos"][0]
+        self.assertEqual(documento["numero_certificado"], "CERT-77-RESERVADO")
+
+    def test_operador_no_puede_validar_ni_por_vista_ni_por_servicio(self):
+        verificacion = self.verificacion_en_revision()
+        bitacora = verificacion.ejecuciones.count()
+        self.client.force_login(self.operador)
+
+        respuesta = self.client.post(reverse("antecedentes:detalle", args=[verificacion.pk]), self.datos_validar())
+        with self.assertRaises(DomainError):
+            services.validar_verificacion(
+                verificacion=verificacion, revisor=self.operador, decision=E.VALIDADA,
+                vigente_hasta=date.today() + timedelta(days=30),
+            )
+
+        self.assertEqual(respuesta.status_code, 403)
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.REQUIERE_REVISION)
+        self.assertIsNone(verificacion.validado_por)
+        self.assertEqual(verificacion.ejecuciones.count(), bitacora)
+
+    def test_la_bandeja_no_muestra_resultados_a_nadie(self):
+        verificacion = self.verificacion_en_revision()
+        for usuario in (self.operador, self.revisor2):
+            with self.subTest(usuario=usuario.email):
+                self.client.force_login(usuario)
+
+                respuesta = self.client.get(reverse("antecedentes:bandeja"))
+
+                self.assertContains(respuesta, verificacion.persona.nombre_completo)
+                for reservado in ("hallazgos", "CERT-77-RESERVADO"):
+                    self.assertNotContains(respuesta, reservado)
+        self.assertEqual(self.lecturas().count(), 0)
+
+    # --- revisor y auditoría de lectura -----------------------------------
+
+    def test_revisor_ve_el_resultado_y_cada_lectura_del_detalle_queda_auditada(self):
+        verificacion = self.verificacion_en_revision()
+        self.client.force_login(self.revisor2)
+
+        primera = self.client.get(reverse("antecedentes:detalle", args=[verificacion.pk]))
+        self.assertEqual(self.lecturas(verificacion).count(), 1)
+        self.client.get(reverse("antecedentes:detalle", args=[verificacion.pk]))
+
+        self.assertContains(primera, "hallazgos")
+        self.assertContains(primera, "CERT-77-RESERVADO")
+        self.assertContains(primera, 'value="validar"')
+        eventos = self.lecturas(verificacion)
+        self.assertEqual(eventos.count(), 2)
+        evento = eventos.first()
+        self.assertEqual((evento.actor, evento.organizacion), (self.revisor2, self.organizacion))
+        self.assertEqual(evento.recurso_tipo, "antecedentes.VerificacionAntecedentes")
+        self.assertEqual(evento.metadata, {"resultado_visible": True})
+
+    def test_lectura_del_operador_tambien_queda_auditada_sin_resultado_visible(self):
+        verificacion = self.verificacion_en_revision()
+        self.client.force_login(self.operador)
+
+        self.client.get(reverse("antecedentes:detalle", args=[verificacion.pk]))
+
+        evento = self.lecturas(verificacion).get()
+        self.assertEqual((evento.actor, evento.metadata), (self.operador, {"resultado_visible": False}))
+
+    def test_cada_get_de_la_api_audita_y_las_lecturas_denegadas_no(self):
+        verificacion = self.verificacion_en_revision()
+        url = reverse("antecedentes:api-detalle", args=[verificacion.pk])
+
+        self.client.force_login(self.revisor2)
+        self.client.get(url)
+        self.client.get(url)
+        self.client.force_login(self.garita)
+        self.client.get(url)
+        self.client.get(reverse("antecedentes:detalle", args=[verificacion.pk]))
+
+        self.assertEqual(self.lecturas(verificacion).count(), 2)
+        self.assertEqual(set(self.lecturas(verificacion).values_list("actor", flat=True)), {self.revisor2.pk})
+
+    # --- cuatro ojos -------------------------------------------------------
+
+    def test_quien_cargo_el_resultado_no_puede_validarlo(self):
+        self.autorizar()
+        verificacion = self.iniciar("manual")[0]
+        services.registrar_resultado_manual(
+            verificacion=verificacion, actor=self.usuario, resultado=ResultadoAntecedentes.NO
+        )
+        bitacora = verificacion.ejecuciones.count()
+        eventos = EventoAuditoria.objects.count()
+
+        with self.assertRaisesMessage(DomainError, "Quien cargó el documento no puede validarlo."):
+            services.validar_verificacion(
+                verificacion=verificacion, revisor=self.usuario, decision=E.VALIDADA,
+                vigente_hasta=date.today() + timedelta(days=30),
+            )
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.REQUIERE_REVISION)
+        self.assertIsNone(verificacion.validado_por)
+        self.assertEqual(verificacion.ejecuciones.count(), bitacora)
+        self.assertEqual(EventoAuditoria.objects.count(), eventos)
+
+    def test_cuatro_ojos_tambien_aplica_a_devolver_y_anular(self):
+        for decision in (E.LISTA, E.CANCELADA):
+            with self.subTest(decision=decision):
+                verificacion = self.verificacion_en_revision(cargado_por=self.usuario)
+
+                with self.assertRaisesMessage(DomainError, "Quien cargó el documento no puede validarlo."):
+                    services.validar_verificacion(
+                        verificacion=verificacion, revisor=self.usuario, decision=decision, comentario="motivo"
+                    )
+
+                verificacion.refresh_from_db()
+                self.assertEqual(verificacion.estado, E.REQUIERE_REVISION)
+
+    def test_la_vista_rechaza_al_que_cargo_y_permite_a_otro_revisor(self):
+        verificacion = self.verificacion_en_revision(cargado_por=self.usuario)
+        url = reverse("antecedentes:detalle", args=[verificacion.pk])
+        bitacora = verificacion.ejecuciones.count()
+
+        self.client.force_login(self.usuario)
+        rechazada = self.client.post(url, self.datos_validar(), follow=True)
+        verificacion.refresh_from_db()
+        self.assertContains(rechazada, "Quien cargó el documento no puede validarlo.")
+        self.assertEqual(verificacion.estado, E.REQUIERE_REVISION)
+        self.assertEqual(verificacion.ejecuciones.count(), bitacora)
+
+        self.client.force_login(self.revisor2)
+        aceptada = self.client.post(url, self.datos_validar(), follow=True)
+        verificacion.refresh_from_db()
+        self.assertContains(aceptada, "Decisión registrada.")
+        self.assertEqual((verificacion.estado, verificacion.validado_por), (E.VALIDADA, self.revisor2))
+
+    def test_el_detalle_no_ofrece_validar_a_quien_cargo(self):
+        verificacion = self.verificacion_en_revision(cargado_por=self.usuario)
+        self.client.force_login(self.usuario)
+
+        respuesta = self.client.get(reverse("antecedentes:detalle", args=[verificacion.pk]))
+
+        self.assertNotContains(respuesta, 'value="validar"')
+        self.assertContains(respuesta, "Quien cargó el documento no puede validarlo.")
+
+    # --- sin acceso ----------------------------------------------------------
+
+    def test_sin_rol_el_detalle_es_404_en_vista_y_api_y_no_se_audita(self):
+        verificacion = self.verificacion_en_revision()
+        for nombre, usuario in self.no_autorizados().items():
+            with self.subTest(usuario=nombre):
+                self.client.force_login(usuario)
+
+                vista = self.client.get(reverse("antecedentes:detalle", args=[verificacion.pk]))
+                api = self.client.get(reverse("antecedentes:api-detalle", args=[verificacion.pk]))
+
+                self.assertEqual((vista.status_code, api.status_code), (404, 404))
+        self.assertEqual(self.lecturas().count(), 0)
+
+    def test_sin_rol_la_bandeja_y_las_acciones_son_403_sin_efectos(self):
+        verificacion = self.crear_verificacion(estado=E.AUTORIZACION_PENDIENTE)
+        consulta = ConsultaProveedor.objects.create(
+            verificacion=verificacion, proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR
+        )
+        persona = self.crear_persona()
+        for nombre, usuario in self.no_autorizados().items():
+            with self.subTest(usuario=nombre):
+                self.client.force_login(usuario)
+                pdf = SimpleUploadedFile("c.pdf", b"%PDF-1.4\n%%EOF\n", content_type="application/pdf")
+                respuestas = {
+                    "iniciar": self.client.post(reverse("antecedentes:iniciar", args=[persona.pk])),
+                    "detalle": self.client.post(
+                        reverse("antecedentes:detalle", args=[verificacion.pk]), self.datos_validar()
+                    ),
+                    "autorizar": self.client.get(
+                        reverse("antecedentes:autorizar", args=[verificacion.pk]), HTTP_HX_REQUEST="true"
+                    ),
+                    "api-iniciar": self.client.post(reverse("antecedentes:api-iniciar", args=[persona.pk])),
+                    "api-documento": self.client.post(
+                        reverse("antecedentes:api-cargar-documento", args=[consulta.pk]), {"archivo": pdf}
+                    ),
+                }
+                if usuario != self.ajeno:  # el de otra organización sí tiene bandeja, pero de la suya
+                    respuestas["bandeja"] = self.client.get(reverse("antecedentes:bandeja"))
+                for clave, respuesta in respuestas.items():
+                    self.assertEqual(respuesta.status_code, 403, clave)
+        self.assertEqual(VerificacionAntecedentes.objects.count(), 1)
+        self.assertEqual(consulta.documentos.count(), 0)
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.AUTORIZACION_PENDIENTE)
+
+    def test_la_bandeja_de_otra_organizacion_no_muestra_estos_casos(self):
+        verificacion = self.verificacion_en_revision()
+        self.client.force_login(self.ajeno)
+
+        respuesta = self.client.get(reverse("antecedentes:bandeja"))
+
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertNotContains(respuesta, verificacion.persona.nombre_completo)
+
+    # --- ficha de personas --------------------------------------------------
+
+    def test_la_lista_de_personas_ofrece_antecedentes_solo_a_quien_puede_operar(self):
+        url_iniciar = reverse("antecedentes:iniciar", args=[self.persona.pk])
+        esperado = {self.operador: True, self.revisor2: True, self.garita: False}
+        for usuario, ve_boton in esperado.items():
+            with self.subTest(usuario=usuario.email):
+                self.client.force_login(usuario)
+
+                respuesta = self.client.get(reverse("personas:lista"))
+
+                self.assertEqual(respuesta.status_code, 200)
+                if ve_boton:
+                    self.assertContains(respuesta, url_iniciar)
+                else:
+                    self.assertNotContains(respuesta, url_iniciar)
 
 
 class MigracionEstadosTests(TestCase):

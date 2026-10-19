@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load permisos_antecedentes %}
 
 {% block titulo %}Personas · SIGECOP{% endblock %}
 {% block migas %}Espacio de trabajo <span class="sc-migas__sep">/</span> <strong>Personas</strong>{% endblock %}
@@ -52,10 +53,13 @@
                           hx-get="{% url 'personas:asignar' persona.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
                     Asignar
                   </button>
+                  {% puede_operar_antecedentes persona.organizacion_id as puede_antecedentes %}
+                  {% if puede_antecedentes %}
                   <form method="post" action="{% url 'antecedentes:iniciar' persona.pk %}">
                     {% csrf_token %}
                     <button type="submit" class="sc-boton-secundario sc-boton-compacto">Antecedentes</button>
                   </form>
+                  {% endif %}
                   <button type="button" class="sc-boton-secundario sc-boton-compacto"
                           hx-get="{% url 'accesos:solicitar' persona.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
                     Ingreso

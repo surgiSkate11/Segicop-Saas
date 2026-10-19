@@ -5,8 +5,7 @@ from django.urls import reverse
 from django.views import View
 from django.views.generic import ListView
 
-from apps.antecedentes import maquina_estados, services
-from apps.antecedentes.alcance import organizaciones_del_usuario
+from apps.antecedentes import maquina_estados, permisos, services
 from apps.antecedentes.forms import AutorizacionDatosForm, RegistrarResultadoManualForm, ValidarVerificacionForm
 from apps.antecedentes.models import EstadoVerificacion, FinalidadConsulta, VerificacionAntecedentes
 from apps.core.exceptions import DomainError
@@ -14,28 +13,26 @@ from apps.core.modals import exito_htmx, render_modal
 from apps.personas.models import Persona
 
 
-class BandejaAntecedentesView(LoginRequiredMixin, ListView):
+class BandejaAntecedentesView(permisos.OperadorRequeridoMixin, ListView):
     model = VerificacionAntecedentes
     template_name = "antecedentes/bandeja.html"
     context_object_name = "verificaciones"
     paginate_by = 25
 
     def get_queryset(self):
-        organizaciones_ids = organizaciones_del_usuario(self.request.user)
+        # La bandeja nunca muestra resultados, ni siquiera al revisor.
         return (
-            VerificacionAntecedentes.objects.filter(
-                organizacion_id__in=organizaciones_ids,
-                estado__in=maquina_estados.ESTADOS_BANDEJA,
-            )
+            permisos.verificaciones_visibles(self.request.user)
+            .filter(estado__in=maquina_estados.ESTADOS_BANDEJA)
             .select_related("persona")
             .order_by("created_at")
         )
 
 
-class IniciarVerificacionView(LoginRequiredMixin, View):
+class IniciarVerificacionView(permisos.OperadorRequeridoMixin, View):
     def post(self, request, persona_pk):
-        organizaciones_ids = organizaciones_del_usuario(request.user)
-        persona = get_object_or_404(Persona, pk=persona_pk, organizacion_id__in=organizaciones_ids)
+        persona = get_object_or_404(Persona, pk=persona_pk)
+        permisos.exigir_operar(request.user, persona.organizacion_id)
         try:
             verificacion, creada = services.iniciar_verificacion(
                 persona=persona, actor=request.user, finalidad=FinalidadConsulta.HABILITACION_INGRESO
@@ -53,31 +50,38 @@ class IniciarVerificacionView(LoginRequiredMixin, View):
 class VerificacionDetalleView(LoginRequiredMixin, View):
     template_name = "antecedentes/detalle.html"
 
-    def _get_verificacion(self, pk):
-        organizaciones_ids = organizaciones_del_usuario(self.request.user)
-        return get_object_or_404(
-            VerificacionAntecedentes.objects.select_related("persona", "autorizacion"),
-            pk=pk,
-            organizacion_id__in=organizaciones_ids,
-        
-        )
+    def _verificacion_para_accion(self, pk):
+        """Las acciones exigen rol operativo en la organización de la verificación (403)."""
+        verificacion = get_object_or_404(VerificacionAntecedentes.objects.select_related("persona", "autorizacion"), pk=pk)
+        permisos.exigir_operar(self.request.user, verificacion.organizacion_id)
+        return verificacion
 
     def get(self, request, pk):
-        verificacion = self._get_verificacion(pk)
+        # Sin rol en la organización el caso no existe (404): no se revela su existencia.
+        verificacion = get_object_or_404(
+            permisos.verificaciones_visibles(request.user).select_related("persona", "autorizacion"), pk=pk
+        )
+        es_revisor = permisos.puede_revisar(request.user, verificacion.organizacion_id)
+        services.registrar_lectura(usuario=request.user, verificacion=verificacion, resultado_visible=es_revisor)
+        espera_decision = verificacion.estado in maquina_estados.ESTADOS_DECISION
+        cargado_por_mi = verificacion.cargado_por_id == request.user.pk
         contexto = {
             "verificacion": verificacion,
             "ejecuciones": verificacion.ejecuciones.all(),
             "autorizacion": verificacion.autorizacion,
             "espera_autorizacion": verificacion.estado == EstadoVerificacion.AUTORIZACION_PENDIENTE,
             "puede_cargar": verificacion.estado in maquina_estados.ESTADOS_CARGA_MANUAL,
-            "puede_decidir": verificacion.estado in maquina_estados.ESTADOS_DECISION,
+            "ver_resultado": es_revisor,
+            "puede_decidir": espera_decision and es_revisor and not cargado_por_mi,
+            "bloqueado_cuatro_ojos": espera_decision and es_revisor and cargado_por_mi,
+            "espera_revision": espera_decision and not es_revisor,
             "form_resultado": RegistrarResultadoManualForm(),
             "form_validar": ValidarVerificacionForm(),
         }
         return render(request, self.template_name, contexto)
 
     def post(self, request, pk):
-        verificacion = self._get_verificacion(pk)
+        verificacion = self._verificacion_para_accion(pk)
         accion = request.POST.get("accion")
         try:
             if accion == "cargar_resultado":
@@ -106,6 +110,7 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
         messages.success(request, "Resultado cargado. Queda pendiente de revisión.")
 
     def _validar(self, request, verificacion):
+        permisos.exigir_revisar(request.user, verificacion.organizacion_id)
         form = ValidarVerificacionForm(request.POST)
         if not form.is_valid():
             messages.error(request, "Revisa el formulario: " + form.errors.as_text())
@@ -120,7 +125,7 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
         messages.success(request, "Decisión registrada.")
 
 
-class AutorizarVerificacionModalView(LoginRequiredMixin, View):
+class AutorizarVerificacionModalView(permisos.OperadorRequeridoMixin, View):
     """Modal HTMX para registrar la autorización de la persona de una verificación pendiente."""
 
     def dispatch(self, request, *args, **kwargs):
@@ -129,11 +134,9 @@ class AutorizarVerificacionModalView(LoginRequiredMixin, View):
         return super().dispatch(request, *args, **kwargs)
 
     def _get_verificacion(self, request, pk):
-        return get_object_or_404(
-            VerificacionAntecedentes.objects.select_related("persona"),
-            pk=pk,
-            organizacion_id__in=organizaciones_del_usuario(request.user),
-        )
+        verificacion = get_object_or_404(VerificacionAntecedentes.objects.select_related("persona"), pk=pk)
+        permisos.exigir_operar(request.user, verificacion.organizacion_id)
+        return verificacion
 
     def _modal(self, request, form, verificacion):
         return render_modal(

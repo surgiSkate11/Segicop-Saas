@@ -65,7 +65,7 @@
     </form>
   {% endif %}
 
-  {% if puede_decidir %}
+  {% if puede_decidir or bloqueado_cuatro_ojos %}
     <div class="sc-banner">
       <div class="sc-banner__icono" style="background: var(--teal-suave); color: var(--teal);">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
@@ -76,8 +76,13 @@
           Resultado reportado: <strong>{{ verificacion.get_resultado_display }}</strong>
           {% if verificacion.numero_certificado %} · Certificado: {{ verificacion.numero_certificado }}{% endif %}
         </p>
+        {% if bloqueado_cuatro_ojos %}
+          <p class="sc-banner__detalle">Quien cargó el documento no puede validarlo. Pide a otro revisor de antecedentes que decida este caso.</p>
+        {% endif %}
       </div>
     </div>
+  {% endif %}
+  {% if puede_decidir %}
     <form method="post" style="margin-bottom: 32px;">
       {% csrf_token %}
       <input type="hidden" name="accion" value="validar">
@@ -88,6 +93,14 @@
       <div class="sc-campo" style="margin:12px 0;"><label>Comentario</label>{{ form_validar.comentario }}</div>
       <button type="submit" class="sc-boton-primario">Registrar decisión</button>
     </form>
+  {% endif %}
+  {% if espera_revision %}
+    <div class="sc-banner">
+      <div>
+        <p class="sc-banner__titulo">Pendiente de revisión</p>
+        <p class="sc-banner__detalle">Un revisor de antecedentes debe decidir este caso. El resultado y el certificado solo los ve el revisor.</p>
+      </div>
+    </div>
   {% endif %}
 
   {% if verificacion.estado == "PDF_RECIBIDO" %}

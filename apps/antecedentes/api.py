@@ -10,16 +10,15 @@ from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.antecedentes.alcance import organizaciones_del_usuario
+from apps.antecedentes import permisos
 from apps.antecedentes.models import (
     ConsultaProveedor,
     DocumentoAntecedentes,
     EstadoConsulta,
     FinalidadConsulta,
-    VerificacionAntecedentes,
 )
-from apps.antecedentes.serializers import VerificacionAntecedentesSerializer
-from apps.antecedentes.services import cambiar_estado_consulta, iniciar_verificacion
+from apps.antecedentes.serializers import serializador_verificacion
+from apps.antecedentes.services import cambiar_estado_consulta, iniciar_verificacion, registrar_lectura
 from apps.core.exceptions import DomainError
 from apps.personas.models import Persona
 
@@ -64,11 +63,8 @@ class IniciarVerificacionAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, persona_pk):
-        persona = get_object_or_404(
-            Persona,
-            pk=persona_pk,
-            organizacion_id__in=organizaciones_del_usuario(request.user),
-        )
+        persona = get_object_or_404(Persona, pk=persona_pk)
+        permisos.exigir_operar(request.user, persona.organizacion_id)
         try:
             verificacion, creada = iniciar_verificacion(
                 persona=persona,
@@ -78,8 +74,9 @@ class IniciarVerificacionAPIView(APIView):
             )
         except DomainError as error:
             return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
+        serializador = serializador_verificacion(permisos.puede_revisar(request.user, verificacion.organizacion_id))
         return Response(
-            VerificacionAntecedentesSerializer(verificacion).data,
+            serializador(verificacion).data,
             status=status.HTTP_202_ACCEPTED if creada else status.HTTP_200_OK,
         )
 
@@ -89,11 +86,11 @@ class VerificacionDetalleAPIView(APIView):
 
     def get(self, request, pk):
         verificacion = get_object_or_404(
-            VerificacionAntecedentes.objects.prefetch_related("consultas_proveedor__documentos"),
-            pk=pk,
-            organizacion_id__in=organizaciones_del_usuario(request.user),
+            permisos.verificaciones_visibles(request.user).prefetch_related("consultas_proveedor__documentos"), pk=pk
         )
-        return Response(VerificacionAntecedentesSerializer(verificacion).data)
+        es_revisor = permisos.puede_revisar(request.user, verificacion.organizacion_id)
+        registrar_lectura(usuario=request.user, verificacion=verificacion, resultado_visible=es_revisor)
+        return Response(serializador_verificacion(es_revisor)(verificacion).data)
 
 
 class CargarDocumentoAPIView(APIView):
@@ -101,11 +98,8 @@ class CargarDocumentoAPIView(APIView):
     parser_classes = [MultiPartParser]
 
     def post(self, request, consulta_pk):
-        consulta = get_object_or_404(
-            ConsultaProveedor.objects.select_related("verificacion__persona"),
-            pk=consulta_pk,
-            verificacion__organizacion_id__in=organizaciones_del_usuario(request.user),
-        )
+        consulta = get_object_or_404(ConsultaProveedor.objects.select_related("verificacion__persona"), pk=consulta_pk)
+        permisos.exigir_operar(request.user, consulta.verificacion.organizacion_id)
         archivo = request.FILES.get("archivo")
         if not archivo:
             return Response({"detail": "El campo archivo es obligatorio."}, status=status.HTTP_400_BAD_REQUEST)

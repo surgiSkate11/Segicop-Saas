@@ -1,7 +1,7 @@
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from apps.antecedentes import maquina_estados
+from apps.antecedentes import maquina_estados, permisos
 from apps.antecedentes.conectores.factory import obtener_conector
 from apps.antecedentes.conectores.manual import ConectorManual
 from apps.antecedentes.models import (
@@ -20,7 +20,42 @@ from apps.antecedentes.models import (
 )
 from apps.core.events import emitir_evento
 from apps.core.exceptions import DomainError
+from apps.identidad.models import Rol, RolAsignado
 from apps.personas.models import Persona
+
+
+@transaction.atomic
+def asignar_rol_antecedentes(*, usuario, organizacion, codigo: str, actor) -> RolAsignado:
+    """Asigna (o reactiva) un rol de antecedentes en la organización; el rol se crea bajo demanda."""
+    if codigo not in permisos.ROLES:
+        raise DomainError(f"Rol de antecedentes inválido: {codigo}")
+    nombre, descripcion = permisos.ROLES[codigo]
+    rol, _ = Rol.objects.get_or_create(codigo=codigo, defaults={"nombre": nombre, "descripcion": descripcion})
+    asignacion, creada = RolAsignado.objects.get_or_create(usuario=usuario, organizacion=organizacion, rol=rol)
+    if not creada:
+        if asignacion.activo:
+            return asignacion
+        asignacion.activo = True
+        asignacion.save(update_fields=["activo", "updated_at"])
+    emitir_evento(
+        actor=actor,
+        accion="ROL_ANTECEDENTES_ASIGNADO",
+        recurso=asignacion,
+        organizacion=organizacion,
+        motivo=f"{rol.nombre} para {usuario.email}.",
+    )
+    return asignacion
+
+
+def registrar_lectura(*, usuario, verificacion: VerificacionAntecedentes, resultado_visible: bool) -> None:
+    """ANT-011: toda lectura del detalle de una verificación queda en la auditoría."""
+    emitir_evento(
+        actor=usuario,
+        accion="LEER_ANTECEDENTES",
+        recurso=verificacion,
+        organizacion=verificacion.organizacion,
+        metadata={"resultado_visible": resultado_visible},
+    )
 
 
 def _modo_del_conector(conector) -> str:
@@ -280,6 +315,11 @@ def registrar_resultado_manual(*, verificacion, actor, resultado, numero_certifi
 
 @transaction.atomic
 def validar_verificacion(*, verificacion, revisor, decision: str, comentario="", vigente_hasta=None):
+    # Cuatro ojos (ANT-013): decide un revisor y nunca quien cargó la evidencia. Siempre activo.
+    if not permisos.puede_revisar(revisor, verificacion.organizacion_id):
+        raise DomainError("Solo un revisor de antecedentes puede decidir sobre una verificación.")
+    if verificacion.cargado_por_id == revisor.pk:
+        raise DomainError("Quien cargó el documento no puede validarlo.")
     decisiones_validas = {EstadoVerificacion.VALIDADA, EstadoVerificacion.LISTA, EstadoVerificacion.CANCELADA}
     if decision not in decisiones_validas:
         raise DomainError(f"Decisión inválida: {decision}")
