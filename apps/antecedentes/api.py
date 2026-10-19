@@ -10,20 +10,17 @@ from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.antecedentes.alcance import organizaciones_del_usuario
 from apps.antecedentes.models import (
     ConsultaProveedor,
     DocumentoAntecedentes,
-    EstadoVerificacion,
+    EstadoConsulta,
     VerificacionAntecedentes,
 )
 from apps.antecedentes.serializers import VerificacionAntecedentesSerializer
-from apps.antecedentes.services import iniciar_verificacion
+from apps.antecedentes.services import cambiar_estado_consulta, iniciar_verificacion
 from apps.core.exceptions import DomainError
 from apps.personas.models import Persona
-
-
-def _organizaciones_del_usuario(usuario):
-    return usuario.roles_asignados.filter(activo=True).values_list("organizacion_id", flat=True)
 
 
 MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
@@ -69,7 +66,7 @@ class IniciarVerificacionAPIView(APIView):
         persona = get_object_or_404(
             Persona,
             pk=persona_pk,
-            organizacion_id__in=_organizaciones_del_usuario(request.user),
+            organizacion_id__in=organizaciones_del_usuario(request.user),
         )
         try:
             verificacion = iniciar_verificacion(persona=persona, actor=request.user)
@@ -88,7 +85,7 @@ class VerificacionDetalleAPIView(APIView):
         verificacion = get_object_or_404(
             VerificacionAntecedentes.objects.prefetch_related("consultas_proveedor__documentos"),
             pk=pk,
-            organizacion_id__in=_organizaciones_del_usuario(request.user),
+            organizacion_id__in=organizaciones_del_usuario(request.user),
         )
         return Response(VerificacionAntecedentesSerializer(verificacion).data)
 
@@ -101,7 +98,7 @@ class CargarDocumentoAPIView(APIView):
         consulta = get_object_or_404(
             ConsultaProveedor.objects.select_related("verificacion__persona"),
             pk=consulta_pk,
-            verificacion__organizacion_id__in=_organizaciones_del_usuario(request.user),
+            verificacion__organizacion_id__in=organizaciones_del_usuario(request.user),
         )
         archivo = request.FILES.get("archivo")
         if not archivo:
@@ -129,9 +126,7 @@ class CargarDocumentoAPIView(APIView):
                     "PDF recibido y pendiente de validación de identidad, contenido y autenticidad."
                 ),
             )
-            consulta.estado = EstadoVerificacion.CARGA_MANUAL_COMPLETADA
-            consulta.requiere_intervencion = False
-            consulta.save(update_fields=["estado", "requiere_intervencion", "updated_at"])
+            cambiar_estado_consulta(consulta=consulta, nuevo_estado=EstadoConsulta.COMPLETADA)
         return Response(
             {"documento_id": str(documento.pk), "estado": documento.estado_validacion},
             status=status.HTTP_201_CREATED,

@@ -219,12 +219,16 @@ html[data-theme="dark"] {
   /* ---------- Chips de estado ---------- */
   .sc-estado { @apply inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full; }
   .sc-estado--borrador, .sc-estado--incompleto, .sc-estado--solicitado, .sc-estado--solicitada,
-  .sc-estado--en_cola, .sc-estado--cerrado, .sc-estado--vencida {
+  .sc-estado--en_cola, .sc-estado--cerrado, .sc-estado--vencida,
+  .sc-estado--creada, .sc-estado--lista, .sc-estado--cancelada {
     @apply bg-gray-100 text-gray-600;
   }
   .sc-estado--en_revision, .sc-estado--observado, .sc-estado--en_proceso, .sc-estado--reintentando,
   .sc-estado--contingencia_manual, .sc-estado--en_revision_manual, .sc-estado--resultado_no_determinado,
-  .sc-estado--resultado_si_obtenido, .sc-estado--observada, .sc-estado--salida {
+  .sc-estado--resultado_si_obtenido, .sc-estado--observada, .sc-estado--salida,
+  .sc-estado--autorizacion_pendiente, .sc-estado--en_consulta, .sc-estado--captcha_requerido,
+  .sc-estado--resultado_obtenido, .sc-estado--pdf_recibido, .sc-estado--datos_coincidentes,
+  .sc-estado--autenticidad_pendiente, .sc-estado--requiere_revision {
     @apply bg-amber-50 text-amber-700;
   }
   .sc-estado--habilitado, .sc-estado--habilitado_con_condiciones, .sc-estado--aprobado,
@@ -232,7 +236,7 @@ html[data-theme="dark"] {
     @apply bg-emerald-50 text-emerald-700;
   }
   .sc-estado--suspendido, .sc-estado--vencido, .sc-estado--no_habilitado, .sc-estado--rechazado,
-  .sc-estado--rechazada, .sc-estado--fallida_tecnica, .sc-estado--denegado {
+  .sc-estado--rechazada, .sc-estado--fallida_tecnica, .sc-estado--denegado, .sc-estado--fallida {
     @apply bg-red-50 text-red-700;
   }
 

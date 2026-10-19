@@ -1,50 +1,29 @@
 import logging
 
 from celery import shared_task
-from django.utils import timezone
 
-from apps.antecedentes.models import ConsultaProveedor, EstadoVerificacion, IntentoConsulta
+from apps.antecedentes import services
+from apps.antecedentes.models import ConsultaProveedor, EstadoConsulta
 
 logger = logging.getLogger(__name__)
 
 
-@shared_task(
-    bind=True,
-    autoretry_for=(ConnectionError, TimeoutError),
-    retry_backoff=True,
-    retry_jitter=True,
-    max_retries=4,
-)
-def preparar_consulta_asistida(self, consulta_id):
+# TODO(T4): reintentos con espera incremental (máx. 2) cuando la tarea haga I/O de red.
+@shared_task
+def preparar_consulta_asistida(consulta_id):
     """Prepara el punto humano; no resuelve CAPTCHA ni evade controles del portal."""
     consulta = ConsultaProveedor.objects.get(pk=consulta_id)
-    if consulta.estado not in {EstadoVerificacion.EN_COLA, EstadoVerificacion.REINTENTANDO}:
+    if consulta.estado not in {EstadoConsulta.PENDIENTE, EstadoConsulta.REINTENTO_PROGRAMADO}:
         return {"estado": consulta.estado, "omitida": True}
 
-    ahora = timezone.now()
-    consulta.intentos += 1
-    consulta.ultimo_intento_at = ahora
-    consulta.estado = EstadoVerificacion.REQUIERE_INTERVENCION
-    consulta.requiere_intervencion = True
-    consulta.detalle_error = (
-        "El portal requiere una acción humana o una integración oficial autorizada. "
-        "No se automatizan CAPTCHA ni controles antifraude."
-    )
-    consulta.save(
-        update_fields=[
-            "intentos",
-            "ultimo_intento_at",
-            "estado",
-            "requiere_intervencion",
-            "detalle_error",
-            "updated_at",
-        ]
-    )
-    IntentoConsulta.objects.create(
+    services.cambiar_estado_consulta(
         consulta=consulta,
-        numero=consulta.intentos,
-        estado_resultante=consulta.estado,
-        detalle=consulta.detalle_error,
+        nuevo_estado=EstadoConsulta.CAPTCHA_REQUERIDO,
+        registrar_intento=True,
+        detalle_error=(
+            "El portal requiere una acción humana o una integración oficial autorizada. "
+            "No se automatizan CAPTCHA ni controles antifraude."
+        ),
     )
     logger.info(
         "consulta_antecedentes_requiere_intervencion",

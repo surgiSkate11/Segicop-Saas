@@ -14,14 +14,18 @@
     · Modo: {{ verificacion.get_modo_conector_display }}
   </p>
 
-  {% if verificacion.estado == "CONTINGENCIA_MANUAL" %}
+  {% if puede_cargar %}
     <div class="sc-banner">
       <div class="sc-banner__icono">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 4 7v6c0 5 4 7.5 8 8 4-.5 8-3 8-8V7z"/></svg>
       </div>
       <div>
         <p class="sc-banner__titulo">Cargar resultado</p>
-        <p class="sc-banner__detalle">Registra lo que encontraste al consultar la fuente por fuera del sistema.</p>
+        <p class="sc-banner__detalle">
+          {% if verificacion.estado == "CAPTCHA_REQUERIDO" %}El portal exige resolver un CAPTCHA a una persona. {% endif %}
+          {% if verificacion.estado == "FALLIDA" %}No se obtuvo un resultado válido; esto no equivale a ausencia de antecedentes. {% endif %}
+          Registra lo que encontraste al consultar la fuente por fuera del sistema.
+        </p>
       </div>
     </div>
     <form method="post" style="margin-bottom: 32px;">
@@ -37,7 +41,7 @@
     </form>
   {% endif %}
 
-  {% if verificacion.estado == "EN_REVISION_MANUAL" %}
+  {% if puede_decidir %}
     <div class="sc-banner">
       <div class="sc-banner__icono" style="background: var(--teal-suave); color: var(--teal);">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
@@ -60,6 +64,15 @@
       <div class="sc-campo" style="margin:12px 0;"><label>Comentario</label>{{ form_validar.comentario }}</div>
       <button type="submit" class="sc-boton-primario">Registrar decisión</button>
     </form>
+  {% endif %}
+
+  {% if verificacion.estado == "PDF_RECIBIDO" %}
+    <div class="sc-banner">
+      <div>
+        <p class="sc-banner__titulo">Documento recibido</p>
+        <p class="sc-banner__detalle">El certificado está pendiente de comprobación automática.</p>
+      </div>
+    </div>
   {% endif %}
 
   <p class="sc-etiqueta-seccion">Bitácora</p>

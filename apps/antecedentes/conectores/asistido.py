@@ -7,10 +7,22 @@ class ConectorAsistido(ConectorAntecedentes):
     def iniciar(self, verificacion, actor=None) -> ResultadoConector:
         maquina_estados.transicionar(
             verificacion=verificacion,
-            nuevo_estado=EstadoVerificacion.REQUIERE_INTERVENCION,
+            nuevo_estado=EstadoVerificacion.LISTA,
+            actor=actor,
+            nota_bitacora="Verificación asistida lista para consultar el portal oficial.",
+        )
+        maquina_estados.transicionar(
+            verificacion=verificacion,
+            nuevo_estado=EstadoVerificacion.EN_CONSULTA,
+            actor=actor,
+            nota_bitacora="Consulta al portal oficial iniciada.",
+        )
+        maquina_estados.transicionar(
+            verificacion=verificacion,
+            nuevo_estado=EstadoVerificacion.CAPTCHA_REQUERIDO,
             actor=actor,
             nota_bitacora=(
-                "La consulta requiere intervención humana en el portal oficial. "
+                "El portal requiere intervención humana (CAPTCHA). "
                 "No se evaden CAPTCHA ni controles antifraude."
             ),
         )

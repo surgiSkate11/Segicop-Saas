@@ -7,8 +7,8 @@ class ConectorManual(ConectorAntecedentes):
     def iniciar(self, verificacion, actor=None) -> ResultadoConector:
         maquina_estados.transicionar(
             verificacion=verificacion,
-            nuevo_estado=EstadoVerificacion.CONTINGENCIA_MANUAL,
+            nuevo_estado=EstadoVerificacion.LISTA,
             actor=actor,
-            nota_bitacora="Verificación manual: pendiente de carga de resultado.",
+            nota_bitacora="Verificación manual: lista para cargar el certificado.",
         )
-        return ResultadoConector(exito=True, detalle="Encolada para carga manual.")
+        return ResultadoConector(exito=True, detalle="Lista para carga manual.")
