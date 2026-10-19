@@ -2,10 +2,11 @@ from django import forms
 
 from apps.core.forms import EstiloFormMixin
 from apps.empresas.models import EmpresaContratista
+from apps.identidad.forms import CorreoAccesoFormMixin
 from apps.personas.models import TipoDocumento
 
 
-class PersonaForm(EstiloFormMixin, forms.Form):
+class PersonaForm(CorreoAccesoFormMixin, EstiloFormMixin, forms.Form):
     tipo_documento = forms.ChoiceField(label="Tipo de documento", choices=TipoDocumento.choices)
     numero_documento = forms.CharField(label="N° de documento", max_length=30)
     nombres = forms.CharField(max_length=150)

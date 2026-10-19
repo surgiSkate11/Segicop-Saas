@@ -5,11 +5,16 @@ from apps.core.choices import EstadoCumplimiento
 from apps.core.events import emitir_evento
 from apps.core.exceptions import DomainError, TransicionEstadoInvalida
 from apps.empresas.models import Contrato, EmpresaContratista
+from apps.identidad.services import provisionar_cuenta, sincronizar_cuenta
 
 
 @transaction.atomic
 def crear_empresa(*, organizacion, razon_social: str, ruc: str, actor, **datos_opcionales) -> EmpresaContratista:
-    """RF-012: detecta el RUC duplicado antes del IntegrityError de BD."""
+    """
+    RF-012: detecta el RUC duplicado antes del IntegrityError de BD.
+    S1: con correo de contacto, crea su cuenta de portal (usuario = RUC) y
+    le envía el enlace de activación; sin correo, el acceso se envía luego.
+    """
     if EmpresaContratista.objects.filter(organizacion=organizacion, ruc=ruc).exists():
         raise DomainError(f"Ya existe una empresa con RUC {ruc} registrada en esta organización.")
 
@@ -27,6 +32,8 @@ def crear_empresa(*, organizacion, razon_social: str, ruc: str, actor, **datos_o
         organizacion=organizacion,
         motivo=f"Alta de {razon_social} ({ruc}).",
     )
+    if empresa.contacto_email:
+        provisionar_cuenta(titular=empresa, actor=actor)
     return empresa
 
 
@@ -139,4 +146,5 @@ def actualizar_empresa(
         organizacion=empresa.organizacion,
         motivo=f"Datos de {razon_social} actualizados.",
     )
+    sincronizar_cuenta(titular=empresa, actor=actor)
     return empresa
