@@ -1,8 +1,10 @@
 from datetime import date, timedelta
 
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 
 from apps.antecedentes import maquina_estados, services
+from apps.antecedentes.api import _validar_pdf_seguro
 from apps.antecedentes.models import (
     EstadoVerificacion,
     EjecucionConector,
@@ -115,3 +117,29 @@ class AntecedentesTests(TestCase):
         self.verificacion.refresh_from_db()
         self.assertEqual(self.verificacion.estado, EstadoVerificacion.VALIDADA)
         self.assertEqual(self.verificacion.vigente_hasta, vigencia)
+
+    def test_rechaza_archivo_no_pdf_aunque_use_extension_pdf(self):
+        archivo = SimpleUploadedFile("documento.pdf", b"<script>alert(1)</script>")
+
+        self.assertEqual(_validar_pdf_seguro(archivo), "El archivo no tiene una estructura PDF válida.")
+
+    def test_rechaza_pdf_con_contenido_activo(self):
+        archivo = SimpleUploadedFile(
+            "documento.pdf",
+            b"%PDF-1.7\n1 0 obj << /OpenAction 2 0 R >> endobj\n%%EOF",
+        )
+
+        self.assertEqual(
+            _validar_pdf_seguro(archivo),
+            "El PDF contiene acciones o archivos incrustados no permitidos.",
+        )
+
+    def test_acepta_pdf_minimo_sin_contenido_activo(self):
+        archivo = SimpleUploadedFile("documento.pdf", b"%PDF-1.7\n1 0 obj << /Type /Catalog >> endobj\n%%EOF")
+
+        self.assertIsNone(_validar_pdf_seguro(archivo))
+
+    def test_rechaza_nombre_de_archivo_con_traversal_o_control(self):
+        archivo = SimpleUploadedFile("../documento\x00.pdf", b"%PDF-1.7\n%%EOF")
+
+        self.assertEqual(_validar_pdf_seguro(archivo), "El nombre del archivo no es válido.")

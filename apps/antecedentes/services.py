@@ -4,7 +4,14 @@ from django.utils import timezone
 from apps.antecedentes import maquina_estados
 from apps.antecedentes.conectores.factory import obtener_conector
 from apps.antecedentes.conectores.manual import ConectorManual
-from apps.antecedentes.models import EstadoVerificacion, ModoConector, ResultadoAntecedentes, VerificacionAntecedentes
+from apps.antecedentes.models import (
+    ConsultaProveedor,
+    EstadoVerificacion,
+    ModoConector,
+    ProveedorAntecedentes,
+    ResultadoAntecedentes,
+    VerificacionAntecedentes,
+)
 from apps.core.exceptions import DomainError
 from apps.personas.models import Persona
 
@@ -25,7 +32,21 @@ def iniciar_verificacion(*, persona: Persona, actor) -> VerificacionAntecedentes
         modo_conector=modo,
     )
     conector.iniciar(verificacion, actor=actor)
+    for proveedor in ProveedorAntecedentes.values:
+        ConsultaProveedor.objects.create(verificacion=verificacion, proveedor=proveedor)
+    transaction.on_commit(
+        lambda: [
+            _encolar_consulta(consulta.pk)
+            for consulta in verificacion.consultas_proveedor.all()
+        ]
+    )
     return verificacion
+
+
+def _encolar_consulta(consulta_id):
+    from apps.antecedentes.tasks import preparar_consulta_asistida
+
+    preparar_consulta_asistida.delay(str(consulta_id))
 
 
 @transaction.atomic

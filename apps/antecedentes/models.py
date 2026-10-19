@@ -18,6 +18,11 @@ class EstadoVerificacion(models.TextChoices):
     OBSERVADA = "OBSERVADA", "Observada"
     RECHAZADA = "RECHAZADA", "Rechazada"
     VENCIDA = "VENCIDA", "Vencida"
+    REQUIERE_INTERVENCION = "REQUIERE_INTERVENCION", "Requiere intervención"
+    PORTAL_NO_DISPONIBLE = "PORTAL_NO_DISPONIBLE", "Portal no disponible"
+    CARGA_MANUAL_PENDIENTE = "CARGA_MANUAL_PENDIENTE", "Carga manual pendiente"
+    CARGA_MANUAL_COMPLETADA = "CARGA_MANUAL_COMPLETADA", "Carga manual completada"
+    ERROR_DEFINITIVO = "ERROR_DEFINITIVO", "Error definitivo"
 
 
 class ModoConector(models.TextChoices):
@@ -67,6 +72,72 @@ class VerificacionAntecedentes(OrganizacionScopedModel):
 
     def __str__(self):
         return f"{self.persona} · {self.get_estado_display()}"
+
+
+class ProveedorAntecedentes(models.TextChoices):
+    MINISTERIO_INTERIOR = "MINISTERIO_INTERIOR", "Ministerio del Interior"
+    FUNCION_JUDICIAL = "FUNCION_JUDICIAL", "Función Judicial"
+
+
+class ConsultaProveedor(BaseModel):
+    """Consulta independiente por fuente; nunca mezcla sus semánticas."""
+
+    verificacion = models.ForeignKey(
+        VerificacionAntecedentes, on_delete=models.CASCADE, related_name="consultas_proveedor"
+    )
+    proveedor = models.CharField(max_length=30, choices=ProveedorAntecedentes.choices)
+    estado = models.CharField(max_length=35, choices=EstadoVerificacion.choices, default=EstadoVerificacion.EN_COLA)
+    intentos = models.PositiveIntegerField(default=0)
+    ultimo_intento_at = models.DateTimeField(null=True, blank=True)
+    proximo_intento_at = models.DateTimeField(null=True, blank=True)
+    codigo_error = models.CharField(max_length=80, blank=True)
+    detalle_error = models.TextField(blank=True)
+    requiere_intervencion = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["verificacion", "proveedor"],
+                name="consulta_unica_por_verificacion_y_proveedor",
+            )
+        ]
+        indexes = [models.Index(fields=["estado", "proximo_intento_at"])]
+
+
+class IntentoConsulta(BaseModel):
+    """Bitácora técnica append-only de cada intento de integración."""
+
+    consulta = models.ForeignKey(ConsultaProveedor, on_delete=models.CASCADE, related_name="intentos_detalle")
+    numero = models.PositiveIntegerField()
+    estado_resultante = models.CharField(max_length=35, choices=EstadoVerificacion.choices)
+    codigo_error = models.CharField(max_length=80, blank=True)
+    latencia_ms = models.PositiveIntegerField(null=True, blank=True)
+    detalle = models.TextField(blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["consulta", "numero"], name="intento_unico_por_consulta")
+        ]
+        ordering = ["-created_at"]
+
+
+class DocumentoAntecedentes(BaseModel):
+    """Documento en almacenamiento privado, pendiente o aprobado por validación."""
+
+    consulta = models.ForeignKey(ConsultaProveedor, on_delete=models.CASCADE, related_name="documentos")
+    archivo = models.FileField(upload_to="antecedentes/staging/%Y/%m/")
+    nombre_original = models.CharField(max_length=255, blank=True)
+    mime_type = models.CharField(max_length=100, blank=True)
+    tamano_bytes = models.PositiveBigIntegerField(default=0)
+    sha256 = models.CharField(max_length=64, blank=True)
+    estado_validacion = models.CharField(max_length=30, default="PENDIENTE")
+    identificacion_extraida = models.CharField(max_length=50, blank=True)
+    nombre_extraido = models.CharField(max_length=255, blank=True)
+    numero_certificado = models.CharField(max_length=100, blank=True)
+    detalle_validacion = models.TextField(blank=True)
+    validado_por = models.ForeignKey(
+        "identidad.Usuario", on_delete=models.PROTECT, null=True, blank=True, related_name="+"
+    )
 
 
 class EjecucionConector(BaseModel):

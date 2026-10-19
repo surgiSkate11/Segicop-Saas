@@ -1,18 +1,17 @@
 from apps.antecedentes import maquina_estados
 from apps.antecedentes.conectores.base import ConectorAntecedentes, ResultadoConector
 from apps.antecedentes.models import EstadoVerificacion
-from apps.core.exceptions import DomainError
 
 
 class ConectorAsistido(ConectorAntecedentes):
     def iniciar(self, verificacion, actor=None) -> ResultadoConector:
         maquina_estados.transicionar(
             verificacion=verificacion,
-            nuevo_estado=EstadoVerificacion.FALLIDA_TECNICA,
+            nuevo_estado=EstadoVerificacion.REQUIERE_INTERVENCION,
             actor=actor,
-            nota_bitacora="Conector asistido aún no implementado (requiere worker Celery aislado).",
+            nota_bitacora=(
+                "La consulta requiere intervención humana en el portal oficial. "
+                "No se evaden CAPTCHA ni controles antifraude."
+            ),
         )
-        raise DomainError(
-            "El conector asistido todavía no está implementado en este proyecto. "
-            "Usa ANTECEDENTES_CONECTOR_MODE=manual mientras se construye el worker Celery."
-        )
+        return ResultadoConector(exito=True, detalle="Intervención humana requerida.")
