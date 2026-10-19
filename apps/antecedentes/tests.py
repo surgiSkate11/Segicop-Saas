@@ -1,11 +1,15 @@
 import hashlib
 import importlib
+import io
 import json
 import re
 import os
 import shutil
 import tempfile
+import time
 import urllib.error
+import uuid
+import zlib
 from email.message import Message
 from datetime import date, datetime, timedelta
 from itertools import count, product
@@ -19,9 +23,10 @@ from django.db.migrations.executor import MigrationExecutor
 from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from pypdf import PdfWriter
 
 from apps.accesos.services import calcular_habilitacion
-from apps.antecedentes import certificado, maquina_estados, services
+from apps.antecedentes import certificado, maquina_estados, pdf, services
 from apps.antecedentes.pdf import MAX_DOCUMENT_BYTES, validar_pdf_seguro
 from apps.antecedentes.models import (
     AutorizacionDatos,
@@ -1012,7 +1017,7 @@ class AutorizacionUITests(BaseAntecedentesTests):
         ajena_resp = self.client.get(reverse("antecedentes:autorizar", args=[ajena.pk]), HTTP_HX_REQUEST="true")
         sin_htmx = self.client.get(reverse("antecedentes:autorizar", args=[propia.pk]))
 
-        self.assertEqual(ajena_resp.status_code, 403)
+        self.assertEqual(ajena_resp.status_code, 404)
         self.assertRedirects(sin_htmx, reverse("antecedentes:detalle", args=[propia.pk]))
 
     def test_api_repetida_devuelve_la_misma_operacion(self):
@@ -1333,7 +1338,7 @@ class PermisosAntecedentesTests(BaseAntecedentesTests):
                 self.assertEqual((vista.status_code, api.status_code), (404, 404))
         self.assertEqual(self.lecturas().count(), 0)
 
-    def test_sin_rol_la_bandeja_y_las_acciones_son_403_sin_efectos(self):
+    def test_sin_rol_la_bandeja_es_403_y_las_acciones_sobre_ids_404_sin_efectos(self):
         verificacion = self.crear_verificacion(estado=E.AUTORIZACION_PENDIENTE)
         consulta = ConsultaProveedor.objects.create(
             verificacion=verificacion, proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR
@@ -1359,7 +1364,7 @@ class PermisosAntecedentesTests(BaseAntecedentesTests):
                 if usuario != self.ajeno:  # el de otra organización sí tiene bandeja, pero de la suya
                     respuestas["bandeja"] = self.client.get(reverse("antecedentes:bandeja"))
                 for clave, respuesta in respuestas.items():
-                    self.assertEqual(respuesta.status_code, 403, clave)
+                    self.assertEqual(respuesta.status_code, 403 if clave == "bandeja" else 404, clave)
         self.assertEqual(VerificacionAntecedentes.objects.count(), 1)
         self.assertEqual(consulta.documentos.count(), 0)
         verificacion.refresh_from_db()
@@ -1869,7 +1874,7 @@ class ConsultaAsistidaTests(BaseAntecedentesTests):
         for accion in ("continuar", "reintentar"):
             with self.subTest(accion=accion):
                 respuesta = self.client.post(reverse("antecedentes:detalle", args=[verificacion.pk]), {"accion": accion})
-                self.assertEqual(respuesta.status_code, 403)
+                self.assertEqual(respuesta.status_code, 404)
 
         verificacion.refresh_from_db()
         self.assertEqual(verificacion.estado, E.CAPTCHA_REQUERIDO)
@@ -1933,8 +1938,13 @@ def _escapar_pdf(texto):
     return texto.encode("cp1252").replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
 
 
-def crear_pdf(lineas=(), *, firma=False):
-    """PDF de una página, válido y con una línea de texto por elemento (sin fixtures binarios)."""
+def crear_pdf(lineas=(), *, firma=False, catalogo_extra=b"", flujo_inflado=None):
+    """
+    PDF de una página, válido y con una línea de texto por elemento (sin fixtures binarios).
+
+    `catalogo_extra` agrega entradas al catálogo; `flujo_inflado` reemplaza el contenido de la página por
+    esos bytes comprimidos con FlateDecode (un PDF pequeño que al descomprimirse es enorme).
+    """
     flujo = b""
     if lineas:
         flujo = (
@@ -1942,12 +1952,16 @@ def crear_pdf(lineas=(), *, firma=False):
             + b"".join(b"(" + _escapar_pdf(linea) + b") Tj T* " for linea in lineas)
             + b"ET"
         )
+    cabecera_flujo = b"<< /Length %d >>"
+    if flujo_inflado is not None:
+        flujo = zlib.compress(flujo_inflado)
+        cabecera_flujo = b"<< /Length %d /Filter /FlateDecode >>"
     objetos = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Catalog /Pages 2 0 R " + catalogo_extra + b" >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 842] /Contents 4 0 R "
         b"/Resources << /Font << /F1 5 0 R >> >> >>",
-        b"<< /Length %d >>\nstream\n" % len(flujo) + flujo + b"\nendstream",
+        cabecera_flujo % len(flujo) + b"\nstream\n" + flujo + b"\nendstream",
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
     ]
     if firma:
@@ -1985,6 +1999,41 @@ def lineas_certificado(
     if firmado:
         lineas.append("Documento firmado electrónicamente")
     return [linea for linea in lineas if not linea.endswith(": ")]
+
+
+def crear_pdf_con_flujo_de_objetos(clave, lineas=()):
+    """
+    PDF 1.5 cuyo diccionario `/Names << /<clave> 1 0 R >>` vive comprimido en un flujo de objetos:
+    ninguna búsqueda sobre los bytes crudos encuentra la clave, solo la lectura del documento.
+    """
+    base = crear_pdf(lineas, catalogo_extra=b"/Names 6 0 R")
+    cuerpo_objetos = b"<< /" + clave + b" 1 0 R >>"
+    flujo_objetos = zlib.compress(b"6 0 " + cuerpo_objetos)
+    # Los cinco objetos de crear_pdf se reutilizan tal cual; se agregan el flujo de objetos (7) y el xref (8).
+    salida = bytearray(base[: base.index(b"xref\n")])
+    posiciones = {numero: salida.index(b"%d 0 obj\n" % numero) for numero in range(1, 6)}
+    posiciones[7] = len(salida)
+    salida += (
+        b"7 0 obj\n<< /Type /ObjStm /N 1 /First 4 /Filter /FlateDecode /Length %d >>\nstream\n" % len(flujo_objetos)
+        + flujo_objetos
+        + b"\nendstream\nendobj\n"
+    )
+    posiciones[8] = len(salida)
+    entradas = bytes([0]) + (0).to_bytes(4, "big") + (65535).to_bytes(2, "big")
+    for numero in range(1, 9):
+        if numero == 6:  # comprimido: flujo de objetos 7, posición 0
+            entradas += bytes([2]) + (7).to_bytes(4, "big") + (0).to_bytes(2, "big")
+        else:
+            entradas += bytes([1]) + posiciones[numero].to_bytes(4, "big") + (0).to_bytes(2, "big")
+    xref = zlib.compress(entradas)
+    salida += (
+        b"8 0 obj\n<< /Type /XRef /Size 9 /W [1 4 2] /Root 1 0 R /Filter /FlateDecode /Length %d >>\nstream\n"
+        % len(xref)
+        + xref
+        + b"\nendstream\nendobj\n"
+    )
+    salida += b"startxref\n%d\n%%%%EOF\n" % posiciones[8]
+    return bytes(salida)
 
 
 class CertificadoParserTests(SimpleTestCase):
@@ -2361,6 +2410,128 @@ class CargarCertificadoTests(PipelineCertificadoBase):
         self.assertEqual(validar_pdf_seguro(grande), "El archivo debe tener entre 1 byte y 10 MB.")
 
 
+class CargaPdfAcotadaTests(PipelineCertificadoBase):
+    """F1/F2: la lectura del PDF corre acotada y fuera de la transacción; el contenido activo no se disimula."""
+
+    ACTIVO = "El PDF contiene acciones o archivos incrustados no permitidos."
+
+    def cargar_a_cuarentena(self, contenido):
+        verificacion, consulta = self.verificacion_lista(E.EN_CONSULTA)
+        bitacora = verificacion.ejecuciones.count()
+        with self.assertRaises(services.DocumentoInvalido) as contexto:
+            self.cargar(verificacion, contenido)
+        documento = DocumentoAntecedentes.objects.get(consulta=consulta)
+        self.assertEqual(contexto.exception.codigo, "ANT_DOCUMENT_INVALID")
+        self.assertEqual(documento.estado_validacion, "CUARENTENA")
+        self.assertEqual(documento.codigo_error, "ANT_DOCUMENT_INVALID")
+        with documento.archivo.open("rb") as almacenado:
+            self.assertEqual(almacenado.read(), contenido)
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.EN_CONSULTA)
+        self.assertEqual(verificacion.ejecuciones.count(), bitacora)
+        return str(contexto.exception)
+
+    @override_settings(ANTECEDENTES_PDF_TIMEOUT=2, ANTECEDENTES_PDF_MAX_BYTES_PAGINA=50_000_000)
+    def test_pdf_que_infla_un_millon_de_ceros_termina_dentro_del_limite_y_va_a_cuarentena(self):
+        contenido = crear_pdf(flujo_inflado=b"0" * 1_000_000)
+        self.assertLess(len(contenido), 10_000)
+
+        inicio = time.monotonic()
+        self.cargar_a_cuarentena(contenido)
+
+        self.assertLess(time.monotonic() - inicio, 20)
+
+    @override_settings(ANTECEDENTES_PDF_TIMEOUT=1)
+    def test_un_lector_que_no_termina_se_corta_por_tiempo_y_el_pdf_va_a_cuarentena(self):
+        colgado = os.path.join(self.raiz, "lector_colgado.py")
+        with open(colgado, "w") as script:
+            script.write("import time\nwhile True:\n    time.sleep(1)\n")
+        inicio = time.monotonic()
+
+        with mock.patch.object(pdf, "_SCRIPT_LECTOR", colgado):
+            motivo = self.cargar_a_cuarentena(crear_pdf(lineas_certificado()))
+
+        self.assertLess(time.monotonic() - inicio, 15)
+        self.assertEqual(motivo, "El PDF tardó más de 1 s en analizarse y se rechazó.")
+
+    def test_pdf_con_una_pagina_de_contenido_desproporcionado_va_a_cuarentena_de_inmediato(self):
+        inicio = time.monotonic()
+        motivo = self.cargar_a_cuarentena(crear_pdf(flujo_inflado=b"0" * 1_000_000))
+
+        self.assertLess(time.monotonic() - inicio, 20)
+        self.assertEqual(motivo, "El contenido de una página del PDF es demasiado grande para analizarlo.")
+
+    def test_pdf_con_demasiadas_paginas_va_a_cuarentena(self):
+        escritor = PdfWriter()
+        for _ in range(6):
+            escritor.add_blank_page(width=612, height=842)
+        salida = io.BytesIO()
+        escritor.write(salida)
+
+        motivo = self.cargar_a_cuarentena(salida.getvalue())
+
+        self.assertEqual(motivo, "El PDF tiene demasiadas páginas (máximo 5).")
+
+    def test_la_extraccion_no_corre_dentro_de_la_transaccion_con_el_bloqueo_de_la_fila(self):
+        verificacion, _ = self.verificacion_lista()
+        # TestCase envuelve la prueba en una transacción; el bloqueo del servicio abre un punto de guardado más.
+        base = len(connection.savepoint_ids)
+        niveles = []
+        original = services.pdf.extraer_texto
+
+        def espiar(contenido):
+            niveles.append(len(connection.savepoint_ids))
+            return original(contenido)
+
+        with mock.patch.object(services.pdf, "extraer_texto", side_effect=espiar):
+            self.cargar(verificacion, crear_pdf(lineas_certificado()))
+
+        self.assertEqual(niveles, [base])
+
+    def test_nombres_con_escapes_hexadecimales_no_ocultan_el_contenido_activo(self):
+        valido = crear_pdf(lineas_certificado())
+        casos = {
+            "JavaScript y OpenAction escapados": crear_pdf(
+                lineas_certificado(), catalogo_extra=b"/Names << /J#61vaScript 1 0 R >> /Open#41ction 1 0 R"
+            ),
+            "Launch escapado": valido.replace(b"/Type /Catalog", b"/Type /Catalog /L#61unch 1 0 R"),
+            "AA y XFA": crear_pdf(lineas_certificado(), catalogo_extra=b"/AA << >> /XFA 1 0 R"),
+        }
+        for nombre, contenido in casos.items():
+            with self.subTest(caso=nombre):
+                self.assertEqual(self.cargar_a_cuarentena(contenido), self.ACTIVO)
+
+    def test_validar_pdf_seguro_normaliza_los_escapes_de_nombres(self):
+        archivo = SimpleUploadedFile(
+            "documento.pdf", b"%PDF-1.7\n1 0 obj << /J#61vaScript 2 0 R >> endobj\n%%EOF"
+        )
+
+        self.assertEqual(validar_pdf_seguro(archivo), self.ACTIVO)
+
+    def test_las_claves_dentro_de_un_flujo_de_objetos_comprimido_tambien_se_detectan(self):
+        limpio = crear_pdf_con_flujo_de_objetos(b"Inofensivo", lineas_certificado())
+        self.assertNotIn(b"JavaScript", crear_pdf_con_flujo_de_objetos(b"JavaScript", lineas_certificado()))
+
+        verificacion, _ = self.verificacion_lista()
+        self.cargar(verificacion, limpio)
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)  # el montaje en sí es un PDF legible
+
+        for clave in (b"JavaScript", b"J#61vaScript", b"EmbeddedFiles", b"OpenAction"):
+            with self.subTest(clave=clave):
+                self.assertEqual(
+                    self.cargar_a_cuarentena(crear_pdf_con_flujo_de_objetos(clave, lineas_certificado())), self.ACTIVO
+                )
+
+    def test_un_certificado_limpio_sigue_llegando_a_autenticidad_pendiente(self):
+        verificacion, _ = self.verificacion_lista()
+
+        self.cargar(verificacion, crear_pdf(lineas_certificado()))
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+
+
 class CargarCertificadoAPITests(PipelineCertificadoBase):
     def url(self, consulta):
         return reverse("antecedentes:api-cargar-documento", args=[consulta.pk])
@@ -2644,6 +2815,86 @@ class VerificacionesAPICrearTests(UIyAPIBase):
         self.assertEqual(respuesta.status_code, 400)
         self.assertEqual(respuesta.json()["code"], "ANT_REQUEST_INVALID")
         self.assertEqual(VerificacionAntecedentes.objects.count(), 1)
+
+    def test_autorizacion_id_vigente_se_acepta_y_es_la_que_queda_vinculada(self):
+        autorizacion = self.autorizar()
+
+        respuesta = self.enviar_json(
+            self.url, {"personaId": str(self.persona.pk), "autorizacionId": str(autorizacion.pk)}, self.operador
+        )
+
+        self.assertEqual(respuesta.status_code, 202)
+        self.assertEqual(VerificacionAntecedentes.objects.get().autorizacion, autorizacion)
+
+    def test_autorizacion_id_que_no_es_la_vigente_responde_400_y_no_crea_nada(self):
+        self.autorizar()
+        revocada = self.autorizar(finalidad=F.RENOVACION)
+        services.revocar_autorizacion(
+            autorizacion=revocada, motivo="La persona retiró su consentimiento.", actor=self.usuario
+        )
+        ajena = self.autorizar(persona=self.crear_persona())
+        de_renovacion = self.autorizar(finalidad=F.RENOVACION)  # la vigente de RENOVACION
+        casos = {
+            "inexistente": (F.HABILITACION_INGRESO, uuid.uuid4()),
+            "de otra persona": (F.HABILITACION_INGRESO, ajena.pk),
+            "de otra finalidad": (F.HABILITACION_INGRESO, de_renovacion.pk),
+            "revocada": (F.RENOVACION, revocada.pk),
+        }
+        self.client.force_login(self.operador)
+        for nombre, (finalidad, autorizacion_id) in casos.items():
+            with self.subTest(nombre):
+                datos = {"personaId": str(self.persona.pk), "finalidad": finalidad, "autorizacionId": str(autorizacion_id)}
+
+                respuesta = self.enviar_json(self.url, datos)
+
+                self.assertEqual(respuesta.status_code, 400)
+                self.assertEqual(respuesta.json()["code"], "ANT_AUTHORIZATION_REQUIRED")
+                self.assertTrue(respuesta.json()["detail"])
+        self.assertEqual(VerificacionAntecedentes.objects.count(), 0)
+        self.assertEqual(self.bitacora_total(), 0)
+
+    def test_autorizacion_id_que_no_es_un_uuid_responde_400_de_solicitud_invalida(self):
+        respuesta = self.enviar_json(
+            self.url, {"personaId": str(self.persona.pk), "autorizacionId": "abc"}, self.operador
+        )
+
+        self.assertEqual(respuesta.status_code, 400)
+        self.assertEqual(respuesta.json()["code"], "ANT_REQUEST_INVALID")
+        self.assertEqual(VerificacionAntecedentes.objects.count(), 0)
+
+    def test_modo_preferido_solo_admite_los_valores_del_contrato_y_no_se_guarda(self):
+        self.autorizar()
+        self.client.force_login(self.operador)
+        for modo in ("OFICIAL_O_ASISTIDO", "ASISTIDO", "MANUAL"):
+            with self.subTest(modo):
+                VerificacionAntecedentes.objects.all().delete()
+
+                respuesta = self.enviar_json(self.url, {"personaId": str(self.persona.pk), "modoPreferido": modo})
+
+                self.assertEqual(respuesta.status_code, 202)
+                # Decide el conector configurado (manual en estas pruebas), no la preferencia.
+                self.assertEqual(VerificacionAntecedentes.objects.get().modo_conector, ModoConector.MANUAL)
+        VerificacionAntecedentes.objects.all().delete()
+        for invalido in ("AUTOMATICO", "manual", "", None, 3):
+            with self.subTest(invalido=invalido):
+                respuesta = self.enviar_json(self.url, {"personaId": str(self.persona.pk), "modoPreferido": invalido})
+
+                self.assertEqual(respuesta.status_code, 400)
+                self.assertEqual(respuesta.json()["code"], "ANT_REQUEST_INVALID")
+                self.assertIn("modoPreferido", respuesta.json()["detail"])
+        self.assertEqual(VerificacionAntecedentes.objects.count(), 0)
+
+    def test_un_campo_desconocido_responde_400_nombrandolo_y_no_crea_nada(self):
+        self.autorizar()
+
+        respuesta = self.enviar_json(
+            self.url, {"personaId": str(self.persona.pk), "prioridad": "ALTA"}, self.operador
+        )
+
+        self.assertEqual(respuesta.status_code, 400)
+        self.assertEqual(respuesta.json()["code"], "ANT_REQUEST_INVALID")
+        self.assertIn("prioridad", respuesta.json()["detail"])
+        self.assertEqual(VerificacionAntecedentes.objects.count(), 0)
 
     def test_sin_rol_en_la_organizacion_la_persona_no_existe_y_no_se_crea_nada(self):
         usuarios = {"garita": self.garita, "revisor de otra organización": self.ajeno, "sin roles": self.sin_roles}
@@ -3140,14 +3391,14 @@ class DetalleCargaCertificadoTests(UIyAPIBase):
         self.verificacion.refresh_from_db()
         self.assertEqual(self.verificacion.estado, E.LISTA)
 
-    def test_quien_no_opera_antecedentes_recibe_403_y_no_se_guarda_nada(self):
+    def test_quien_no_opera_antecedentes_recibe_404_y_no_se_guarda_nada(self):
         self.client.force_login(self.garita)
 
         respuesta = self.client.post(
             self.url, {"accion": "cargar_certificado", "archivo": self.pdf_subido(crear_pdf(lineas_certificado()))}
         )
 
-        self.assertEqual(respuesta.status_code, 403)
+        self.assertEqual(respuesta.status_code, 404)
         self.assertEqual(DocumentoAntecedentes.objects.count(), 0)
 
 
@@ -3198,6 +3449,178 @@ class DetalleRevisorTests(UIyAPIBase):
         self.assertContains(respuesta, "MI-2026-004455")
         self.assertNotContains(respuesta, 'value="validar"')
         self.assertContains(respuesta, "Quien cargó el documento no puede validarlo")
+
+
+class CuatroOjosPorDocumentoTests(UIyAPIBase):
+    """L2: devolver el caso y volver a cargar no borra quién aportó evidencia antes."""
+
+    MENSAJE = "Quien cargó el documento no puede validarlo."
+
+    def setUp(self):
+        super().setUp()
+        self.primer_cargador = self.crear_usuario("primer-cargador@example.com", "revisor_antecedentes")
+
+    def devolver(self, verificacion):
+        services.validar_verificacion(
+            verificacion=verificacion, revisor=self.revisor2, decision=E.LISTA, comentario="Cargar de nuevo."
+        )
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.LISTA)
+
+    def assert_no_puede_validar(self, verificacion, usuario):
+        with self.assertRaisesMessage(DomainError, self.MENSAJE):
+            services.validar_verificacion(verificacion=verificacion, revisor=usuario, decision=E.VALIDADA)
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+        self.assertNotEqual(verificacion.validado_por, usuario)
+
+    def test_quien_subio_el_primer_certificado_no_valida_tras_devolver_y_una_segunda_carga_de_otro(self):
+        verificacion, _ = self.verificacion_lista()
+        documento, _ = self.cargar(verificacion, crear_pdf(lineas_certificado(numero="MI-1")), actor=self.primer_cargador)
+        self.devolver(verificacion)
+        self.cargar(verificacion, crear_pdf(lineas_certificado(numero="MI-2")), actor=self.operador)
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.cargado_por, self.operador)  # el campo solo recuerda la última carga
+        self.assertEqual(documento.subido_por, self.primer_cargador)
+
+        self.assert_no_puede_validar(verificacion, self.primer_cargador)
+        self.client.force_login(self.primer_cargador)
+        respuesta = self.client.post(
+            reverse("antecedentes:detalle", args=[verificacion.pk]),
+            {"accion": "validar", "decision": E.VALIDADA, "comentario": ""},
+            follow=True,
+        )
+        self.assertContains(respuesta, self.MENSAJE)
+        api = self.enviar_json(
+            f"/api/v1/verificaciones-antecedentes/{verificacion.pk}/revision", {"decision": E.VALIDADA}
+        )
+        self.assertEqual((api.status_code, api.json()["detail"]), (400, self.MENSAJE))
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+
+        # Un revisor que no aportó nada sí puede decidir.
+        services.validar_verificacion(verificacion=verificacion, revisor=self.revisor2, decision=E.VALIDADA)
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.VALIDADA)
+
+    def test_quien_cargo_el_resultado_manual_no_valida_tras_devolver_y_una_carga_de_otro(self):
+        verificacion, _ = self.verificacion_lista()
+        services.registrar_resultado_manual(
+            verificacion=verificacion, actor=self.primer_cargador, resultado=ResultadoAntecedentes.NO
+        )
+        verificacion.refresh_from_db()
+        self.devolver(verificacion)
+        self.cargar(verificacion, crear_pdf(lineas_certificado()), actor=self.operador)
+
+        self.assert_no_puede_validar(verificacion, self.primer_cargador)
+
+    def test_quien_subio_un_pdf_que_quedo_en_cuarentena_tampoco_valida_el_caso(self):
+        verificacion, _ = self.verificacion_lista()
+        with self.assertRaises(services.DocumentoInvalido):
+            self.cargar(verificacion, b"%PDF-1.4\nbasura\n%%EOF", actor=self.primer_cargador)
+        self.cargar(verificacion, crear_pdf(lineas_certificado()), actor=self.operador)
+
+        self.assert_no_puede_validar(verificacion, self.primer_cargador)
+
+
+class DecisionesConcurrentesTests(UIyAPIBase):
+    """L4: la decisión se toma sobre el estado real de la fila, no sobre el que leyó quien llamó."""
+
+    def test_la_segunda_decision_sobre_una_copia_vieja_se_rechaza_y_no_pisa_la_primera(self):
+        verificacion = self.con_certificado()
+        copia_vieja = VerificacionAntecedentes.objects.get(pk=verificacion.pk)
+        otro_revisor = self.crear_usuario("revisor3-pdf@example.com", "revisor_antecedentes")
+
+        services.validar_verificacion(verificacion=verificacion, revisor=self.revisor2, decision=E.VALIDADA)
+        bitacora = EjecucionConector.objects.filter(verificacion=verificacion).count()
+        with self.assertRaisesMessage(DomainError, "no espera una decisión de revisión"):
+            services.validar_verificacion(
+                verificacion=copia_vieja, revisor=otro_revisor, decision=E.CANCELADA, comentario="Anular."
+            )
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.VALIDADA)
+        self.assertEqual(verificacion.validado_por, self.revisor2)
+        self.assertEqual(EjecucionConector.objects.filter(verificacion=verificacion).count(), bitacora)
+
+    def test_la_decision_deja_la_copia_de_quien_llama_al_dia(self):
+        verificacion = self.con_certificado()
+
+        services.validar_verificacion(verificacion=verificacion, revisor=self.revisor2, decision=E.VALIDADA)
+
+        self.assertEqual(verificacion.estado, E.VALIDADA)
+        self.assertEqual(verificacion.validado_por, self.revisor2)
+
+
+class ExistenciaNoReveladaTests(UIyAPIBase):
+    """L3: quien no tiene rol en la organización recibe el mismo 404 por un id ajeno que por uno inexistente."""
+
+    def acciones(self, verificacion, consulta, persona):
+        """(nombre, función(id real o inexistente)) de cada acción dirigida a un id."""
+        htmx = {"HTTP_HX_REQUEST": "true"}
+        archivo = lambda: {"archivo": self.pdf_subido(crear_pdf(lineas_certificado()))}  # noqa: E731
+        return {
+            "detalle POST": lambda v, c, p: self.client.post(
+                reverse("antecedentes:detalle", args=[v]), {"accion": "reintentar"}
+            ),
+            "autorizar GET": lambda v, c, p: self.client.get(reverse("antecedentes:autorizar", args=[v]), **htmx),
+            "autorizar POST": lambda v, c, p: self.client.post(reverse("antecedentes:autorizar", args=[v]), {}, **htmx),
+            "revocar GET": lambda v, c, p: self.client.get(
+                reverse("antecedentes:revocar-autorizacion", args=[v]), **htmx
+            ),
+            "revocar POST": lambda v, c, p: self.client.post(
+                reverse("antecedentes:revocar-autorizacion", args=[v]), {"motivo": "Retiró su consentimiento."}, **htmx
+            ),
+            "iniciar": lambda v, c, p: self.client.post(reverse("antecedentes:iniciar", args=[p])),
+            "api iniciar": lambda v, c, p: self.client.post(reverse("antecedentes:api-iniciar", args=[p])),
+            "api documento": lambda v, c, p: self.client.post(
+                reverse("antecedentes:api-cargar-documento", args=[c]), archivo()
+            ),
+        }
+
+    def test_un_id_ajeno_y_uno_inexistente_responden_404_igual_a_quien_no_tiene_rol_en_la_organizacion(self):
+        verificacion, consulta = self.verificacion_lista(E.AUTORIZACION_PENDIENTE)
+        inexistente = uuid.uuid4()
+        usuarios = {
+            "garita": self.garita,
+            "revisor de otra organización": self.ajeno,
+            "sin roles": self.sin_roles,
+        }
+        for nombre_usuario, usuario in usuarios.items():
+            self.client.force_login(usuario)
+            for nombre, accion in self.acciones(verificacion, consulta, self.persona.pk).items():
+                with self.subTest(usuario=nombre_usuario, accion=nombre):
+                    real = accion(verificacion.pk, consulta.pk, self.persona.pk)
+                    falso = accion(inexistente, inexistente, inexistente)
+
+                    self.assertEqual((real.status_code, falso.status_code), (404, 404))
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.AUTORIZACION_PENDIENTE)
+        self.assertEqual(VerificacionAntecedentes.objects.count(), 1)
+        self.assertEqual(DocumentoAntecedentes.objects.count(), 0)
+        self.assertEqual(AutorizacionDatos.objects.count(), 0)
+
+    def test_el_operador_sigue_recibiendo_403_en_las_acciones_solo_de_revisor_de_su_organizacion(self):
+        verificacion, _ = self.verificacion_lista(E.REQUIERE_REVISION)
+        self.client.force_login(self.operador)
+
+        respuesta = self.client.post(
+            reverse("antecedentes:detalle", args=[verificacion.pk]),
+            {"accion": "validar", "decision": E.VALIDADA, "comentario": ""},
+        )
+
+        self.assertEqual(respuesta.status_code, 403)
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.REQUIERE_REVISION)
+
+    def test_quien_opera_la_organizacion_sigue_usando_sus_acciones(self):
+        verificacion, _ = self.verificacion_lista(E.AUTORIZACION_PENDIENTE)
+        self.client.force_login(self.operador)
+
+        modal = self.client.get(reverse("antecedentes:autorizar", args=[verificacion.pk]), HTTP_HX_REQUEST="true")
+        iniciar = self.client.post(reverse("antecedentes:api-iniciar", args=[self.crear_persona().pk]))
+
+        self.assertEqual((modal.status_code, iniciar.status_code), (200, 202))
 
 
 class RevocarAutorizacionUITests(UIyAPIBase):
@@ -3262,7 +3685,7 @@ class RevocarAutorizacionUITests(UIyAPIBase):
         self.autorizacion.refresh_from_db()
         self.assertEqual(self.autorizacion.motivo_revocacion, "Primera vez.")
 
-    def test_sin_rol_en_la_organizacion_es_403_y_sin_htmx_redirige_al_detalle(self):
+    def test_sin_rol_en_la_organizacion_es_404_y_sin_htmx_redirige_al_detalle(self):
         self.client.force_login(self.garita)
         prohibido = self.client.post(self.url, {"motivo": "x"}, HTTP_HX_REQUEST="true")
         self.client.force_login(self.ajeno)
@@ -3270,7 +3693,7 @@ class RevocarAutorizacionUITests(UIyAPIBase):
         self.client.force_login(self.operador)
         sin_htmx = self.client.get(self.url)
 
-        self.assertEqual((prohibido.status_code, ajeno.status_code), (403, 403))
+        self.assertEqual((prohibido.status_code, ajeno.status_code), (404, 404))
         self.assertRedirects(sin_htmx, reverse("antecedentes:detalle", args=[self.verificacion.pk]))
         self.autorizacion.refresh_from_db()
         self.assertIsNone(self.autorizacion.revocada_en)
@@ -3402,3 +3825,24 @@ class RenovacionTests(BaseAntecedentesTests):
 
         self.assertEqual(resultado["renovaciones_antecedentes"], 1)
         self.assertTrue(self.renovaciones(por_vencer.persona).exists())
+
+    def test_si_una_persona_falla_las_demas_siguen_renovandose_y_el_job_termina(self):
+        from apps.cumplimiento.jobs import procesar_vencimientos
+
+        falla = self.validada(vence_en_dias=4)
+        sigue = self.validada(vence_en_dias=6)
+        real = services.iniciar_verificacion
+
+        def iniciar(*, persona, **kwargs):
+            if persona.pk == falla.persona.pk:
+                raise DomainError("La fuente rechazó esta persona.")
+            return real(persona=persona, **kwargs)
+
+        with mock.patch.object(services, "iniciar_verificacion", side_effect=iniciar):
+            with self.assertLogs("apps.antecedentes.services", level="ERROR") as registro:
+                resultado = procesar_vencimientos()
+
+        self.assertEqual(resultado["renovaciones_antecedentes"], 1)
+        self.assertFalse(self.renovaciones(falla.persona).exists())
+        self.assertTrue(self.renovaciones(sigue.persona).exists())
+        self.assertIn("La fuente rechazó esta persona.", "\n".join(registro.output))

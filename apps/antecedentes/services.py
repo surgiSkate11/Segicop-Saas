@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import os
 import time
 import uuid
@@ -37,6 +38,8 @@ from apps.core.events import emitir_evento
 from apps.core.exceptions import DomainError
 from apps.identidad.models import Rol, RolAsignado
 from apps.personas.models import Persona
+
+logger = logging.getLogger(__name__)
 
 # Códigos de error del módulo (tabla "Errores mínimos" de requerimientos).
 ANT_CAPTCHA_REQUIRED = "ANT_CAPTCHA_REQUIRED"
@@ -94,7 +97,7 @@ def _modo_del_conector(conector) -> str:
     return ModoConector.MANUAL if isinstance(conector, ConectorManual) else ModoConector.ASISTIDO
 
 
-def _autorizacion_vigente(persona: Persona, finalidad: str):
+def autorizacion_vigente(persona: Persona, finalidad: str):
     """Última autorización no revocada de la misma persona, organización y finalidad."""
     return (
         AutorizacionDatos.objects.filter(
@@ -176,7 +179,7 @@ def iniciar_verificacion(
         raise
     ConsultaProveedor.objects.create(verificacion=verificacion, proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR)
 
-    autorizacion = _autorizacion_vigente(persona, finalidad)
+    autorizacion = autorizacion_vigente(persona, finalidad)
     if autorizacion is None:
         maquina_estados.transicionar(
             verificacion=verificacion,
@@ -568,7 +571,7 @@ def _motivo_de_cuarentena(documento: DocumentoAntecedentes) -> str:
     return documento.detalle_validacion.removesuffix(_SUFIJO_CUARENTENA)
 
 
-def _guardar_documento(consulta, archivo, contenido: bytes, sha256: str) -> DocumentoAntecedentes:
+def _guardar_documento(consulta, archivo, contenido: bytes, sha256: str, actor) -> DocumentoAntecedentes:
     """Conserva los bytes originales en el almacenamiento privado, con un nombre propio (nunca el del usuario)."""
     documento = DocumentoAntecedentes(
         consulta=consulta,
@@ -577,6 +580,7 @@ def _guardar_documento(consulta, archivo, contenido: bytes, sha256: str) -> Docu
         tamano_bytes=len(contenido),
         sha256=sha256,
         estado_validacion="PENDIENTE",
+        subido_por=actor,
     )
     documento.archivo.save(f"antecedente-{uuid.uuid4().hex}.pdf", ContentFile(contenido), save=False)
     documento.save()
@@ -669,6 +673,15 @@ def _analizar_certificado(*, verificacion, consulta, documento, texto: str, cont
     )
 
 
+def _leer_pdf(contenido: bytes) -> tuple[str | None, str]:
+    """(motivo de rechazo o None, texto): estructura barata primero; la lectura aislada solo si pasa."""
+    motivo = pdf.validar_estructura(contenido)
+    if motivo:
+        return motivo, ""
+    texto, motivo = pdf.extraer_texto(contenido)
+    return motivo, texto
+
+
 def cargar_certificado(*, verificacion, archivo, actor) -> tuple[DocumentoAntecedentes, bool]:
     """
     Única entrada de un certificado PDF (S7). Devuelve (documento, creado).
@@ -690,7 +703,16 @@ def cargar_certificado(*, verificacion, archivo, actor) -> tuple[DocumentoAntece
     if consulta is None:
         raise DomainError("La verificación no tiene una consulta al Ministerio del Interior.")
 
-    motivo = None
+    # La lectura del PDF (proceso aparte, con tiempo límite) va antes y fuera de la transacción: ninguna fila
+    # queda bloqueada mientras se analiza. Un duplicado o un estado que no admite carga no se lee.
+    pendiente = (
+        not DocumentoAntecedentes.objects.filter(consulta=consulta, sha256=sha256).exists()
+        and VerificacionAntecedentes.objects.filter(
+            pk=verificacion.pk, estado__in=maquina_estados.ESTADOS_CARGA_MANUAL
+        ).exists()
+    )
+    analisis = _leer_pdf(contenido) if pendiente else None
+
     with transaction.atomic():
         bloqueada = (
             VerificacionAntecedentes.objects.select_for_update().select_related("persona").get(pk=verificacion.pk)
@@ -703,11 +725,8 @@ def cargar_certificado(*, verificacion, archivo, actor) -> tuple[DocumentoAntece
         if bloqueada.estado not in maquina_estados.ESTADOS_CARGA_MANUAL:
             raise DomainError(f"No se puede cargar un certificado con la verificación en estado '{bloqueada.estado}'.")
 
-        motivo = pdf.validar_estructura(contenido)
-        texto = ""
-        if not motivo:
-            texto, motivo = pdf.extraer_texto(contenido)
-        documento = _guardar_documento(consulta, archivo, contenido, sha256)
+        motivo, texto = analisis or _leer_pdf(contenido)  # solo se lee aquí si el estado cambió durante la espera
+        documento = _guardar_documento(consulta, archivo, contenido, sha256, actor)
         if motivo:
             documento.estado_validacion = CUARENTENA
             documento.codigo_error = ANT_DOCUMENT_INVALID
@@ -766,6 +785,7 @@ def registrar_resultado_manual(*, verificacion, actor, resultado, numero_certifi
         comentario=comentario,
         fecha_resultado=timezone.now(),
         cargado_por=actor,
+        resultado_manual_por=actor,
     )
     maquina_estados.transicionar(
         verificacion=verificacion,
@@ -795,12 +815,23 @@ def vigencia_del_certificado(verificacion):
     )
 
 
+def aporto_evidencia(verificacion, usuario) -> bool:
+    """Cuatro ojos: el usuario cargó la última evidencia, el resultado manual o cualquier documento (aun en cuarentena)."""
+    return (
+        usuario.pk in (verificacion.cargado_por_id, verificacion.resultado_manual_por_id)
+        or DocumentoAntecedentes.objects.filter(consulta__verificacion=verificacion, subido_por=usuario).exists()
+    )
+
+
 @transaction.atomic
 def validar_verificacion(*, verificacion, revisor, decision: str, comentario="", vigente_hasta=None):
+    # Se bloquea la fila y se lee de nuevo: dos decisiones simultáneas no pueden basarse en el mismo estado viejo.
+    VerificacionAntecedentes.objects.select_for_update().get(pk=verificacion.pk)
+    verificacion.refresh_from_db()
     # Cuatro ojos (ANT-013): decide un revisor y nunca quien cargó la evidencia. Siempre activo.
     if not permisos.puede_revisar(revisor, verificacion.organizacion_id):
         raise DomainError("Solo un revisor de antecedentes puede decidir sobre una verificación.")
-    if verificacion.cargado_por_id == revisor.pk:
+    if aporto_evidencia(verificacion, revisor):
         raise DomainError("Quien cargó el documento no puede validarlo.")
     decisiones_validas = {EstadoVerificacion.VALIDADA, EstadoVerificacion.LISTA, EstadoVerificacion.CANCELADA}
     if decision not in decisiones_validas:
@@ -890,6 +921,10 @@ def programar_renovaciones(actor=None) -> int:
     )
     total = 0
     for persona in candidatas:
-        _, creada = iniciar_verificacion(persona=persona, actor=actor, finalidad=FinalidadConsulta.RENOVACION)
+        try:
+            _, creada = iniciar_verificacion(persona=persona, actor=actor, finalidad=FinalidadConsulta.RENOVACION)
+        except Exception:  # una persona con problemas no debe detener el job de todas las demás
+            logger.exception("No se pudo programar la renovación de antecedentes de la persona %s.", persona.pk)
+            continue
         total += int(creada)
     return total

@@ -72,10 +72,12 @@ class BandejaAntecedentesView(permisos.OperadorRequeridoMixin, ListView):
         return contexto
 
 
-class IniciarVerificacionView(permisos.OperadorRequeridoMixin, View):
+class IniciarVerificacionView(LoginRequiredMixin, View):
     def post(self, request, persona_pk):
-        persona = get_object_or_404(Persona, pk=persona_pk)
-        permisos.exigir_operar(request.user, persona.organizacion_id)
+        # Sin rol operativo en la organización de la persona, esta no existe (404).
+        persona = get_object_or_404(
+            Persona, pk=persona_pk, organizacion_id__in=permisos.organizaciones_operables(request.user)
+        )
         try:
             verificacion, creada = services.iniciar_verificacion(
                 persona=persona, actor=request.user, finalidad=FinalidadConsulta.HABILITACION_INGRESO
@@ -94,10 +96,10 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
     template_name = "antecedentes/detalle.html"
 
     def _verificacion_para_accion(self, pk):
-        """Las acciones exigen rol operativo en la organización de la verificación (403)."""
-        verificacion = get_object_or_404(VerificacionAntecedentes.objects.select_related("persona", "autorizacion"), pk=pk)
-        permisos.exigir_operar(self.request.user, verificacion.organizacion_id)
-        return verificacion
+        """Las acciones exigen rol operativo en la organización de la verificación; sin él, no existe (404)."""
+        return get_object_or_404(
+            permisos.verificaciones_visibles(self.request.user).select_related("persona", "autorizacion"), pk=pk
+        )
 
     def get(self, request, pk):
         # Sin rol en la organización el caso no existe (404): no se revela su existencia.
@@ -107,7 +109,7 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
         es_revisor = permisos.puede_revisar(request.user, verificacion.organizacion_id)
         services.registrar_lectura(usuario=request.user, verificacion=verificacion, resultado_visible=es_revisor)
         espera_decision = verificacion.estado in maquina_estados.ESTADOS_DECISION
-        cargado_por_mi = verificacion.cargado_por_id == request.user.pk
+        cargado_por_mi = services.aporto_evidencia(verificacion, request.user)
         contexto = {
             "verificacion": verificacion,
             "ejecuciones": verificacion.ejecuciones.all(),
@@ -221,7 +223,7 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
         messages.success(request, "Decisión registrada.")
 
 
-class ModalVerificacionView(permisos.OperadorRequeridoMixin, View):
+class ModalVerificacionView(LoginRequiredMixin, View):
     """Base de los modales HTMX de una verificación: sin HTMX se vuelve al detalle; opera quien tenga rol."""
 
     def dispatch(self, request, *args, **kwargs):
@@ -230,11 +232,9 @@ class ModalVerificacionView(permisos.OperadorRequeridoMixin, View):
         return super().dispatch(request, *args, **kwargs)
 
     def _get_verificacion(self, request, pk):
-        verificacion = get_object_or_404(
-            VerificacionAntecedentes.objects.select_related("persona", "autorizacion"), pk=pk
+        return get_object_or_404(
+            permisos.verificaciones_visibles(request.user).select_related("persona", "autorizacion"), pk=pk
         )
-        permisos.exigir_operar(request.user, verificacion.organizacion_id)
-        return verificacion
 
 
 class AutorizarVerificacionModalView(ModalVerificacionView):
