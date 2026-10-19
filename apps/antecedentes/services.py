@@ -1,7 +1,13 @@
+import time
+from datetime import timedelta
+
+from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from apps.antecedentes import maquina_estados, permisos
+from apps.antecedentes.conectores.asistido import ConectorAsistido
+from apps.antecedentes.conectores.base import ClaseRespuesta
 from apps.antecedentes.conectores.factory import obtener_conector
 from apps.antecedentes.conectores.manual import ConectorManual
 from apps.antecedentes.models import (
@@ -16,12 +22,24 @@ from apps.antecedentes.models import (
     ModoConector,
     ProveedorAntecedentes,
     ResultadoAntecedentes,
+    SaludFuente,
     VerificacionAntecedentes,
 )
 from apps.core.events import emitir_evento
 from apps.core.exceptions import DomainError
 from apps.identidad.models import Rol, RolAsignado
 from apps.personas.models import Persona
+
+# Códigos de error del módulo (tabla "Errores mínimos" de requerimientos).
+ANT_CAPTCHA_REQUIRED = "ANT_CAPTCHA_REQUIRED"
+ANT_SOURCE_UNAVAILABLE = "ANT_SOURCE_UNAVAILABLE"
+ANT_RATE_LIMITED = "ANT_RATE_LIMITED"
+
+_esperar = time.sleep  # punto de inyección para las pruebas
+
+
+def _config(nombre: str, por_defecto):
+    return getattr(settings, nombre, por_defecto)
 
 
 @transaction.atomic
@@ -90,11 +108,20 @@ def _solicitud_existente(persona: Persona, finalidad: str, clave_idempotencia: s
 
 
 def _arrancar_conector(verificacion: VerificacionAntecedentes, actor) -> None:
-    """Desde LISTA: el conector avanza el caso y, si es asistido, se encola la consulta."""
+    """
+    Desde LISTA: el conector avanza el caso y, si es asistido, se comprueba el portal.
+    Síncrono por defecto (respuesta inmediata, sin depender de un worker); con
+    ANTECEDENTES_CONSULTA_ASINCRONA la consulta se encola en Celery al confirmar.
+    """
     obtener_conector().iniciar(verificacion, actor=actor)
-    if verificacion.modo_conector == ModoConector.ASISTIDO:
-        consulta = verificacion.consultas_proveedor.get(proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR)
+    if verificacion.modo_conector != ModoConector.ASISTIDO:
+        return
+    consulta = verificacion.consultas_proveedor.get(proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR)
+    if _config("ANTECEDENTES_CONSULTA_ASINCRONA", False):
         transaction.on_commit(lambda: _encolar_consulta(consulta.pk))
+        return
+    ejecutar_consulta_asistida(consulta=consulta, actor=actor)
+    verificacion.refresh_from_db()
 
 
 def iniciar_verificacion(
@@ -244,9 +271,232 @@ def revocar_autorizacion(*, autorizacion: AutorizacionDatos, motivo: str, actor)
 
 
 def _encolar_consulta(consulta_id):
-    from apps.antecedentes.tasks import preparar_consulta_asistida
+    from apps.antecedentes.tasks import ejecutar_consulta_asistida as tarea
 
-    preparar_consulta_asistida.delay(str(consulta_id))
+    tarea.delay(str(consulta_id))
+
+
+# --- Consulta asistida: reintentos limitados y disyuntor por fuente (S2-S4) ---
+
+
+def _hora(momento) -> str:
+    return timezone.localtime(momento).strftime("%H:%M")
+
+
+def mensaje_reintento(momento) -> str:
+    return f"Vuelve a intentarlo después de las {_hora(momento)} o carga el certificado manualmente."
+
+
+def _salud(proveedor: str) -> SaludFuente:
+    return SaludFuente.objects.get_or_create(proveedor=proveedor)[0]
+
+
+def fuente_en_pausa_hasta(proveedor: str):
+    """Hora hasta la que el disyuntor impide consultar la fuente, o None si está cerrado."""
+    abierto_hasta = SaludFuente.objects.filter(proveedor=proveedor).values_list("abierto_hasta", flat=True).first()
+    return abierto_hasta if abierto_hasta and abierto_hasta > timezone.now() else None
+
+
+def _pausa() -> timedelta:
+    return timedelta(seconds=_config("ANTECEDENTES_CIRCUITO_PAUSA", 600))
+
+
+def _fuente_respondio(salud: SaludFuente) -> None:
+    salud.fallos_consecutivos = 0
+    salud.abierto_hasta = None
+    salud.ultimo_codigo = ""
+    salud.save()
+
+
+def _fuente_fallo(salud: SaludFuente, sondeo) -> None:
+    salud.fallos_consecutivos += 1
+    salud.ultimo_codigo = ANT_SOURCE_UNAVAILABLE
+    salud.ultima_evidencia = sondeo.evidencia[:255]
+    if salud.fallos_consecutivos >= _config("ANTECEDENTES_CIRCUITO_UMBRAL", 3):
+        salud.abierto_hasta = timezone.now() + _pausa()
+    salud.save()
+
+
+def _tomar_consulta(consulta: ConsultaProveedor) -> bool:
+    """Reclama la consulta de forma atómica: dos ejecuciones simultáneas nunca consultan dos veces."""
+    return bool(
+        ConsultaProveedor.objects.filter(
+            pk=consulta.pk,
+            estado__in=(EstadoConsulta.PENDIENTE, EstadoConsulta.REINTENTO_PROGRAMADO),
+            verificacion__estado=EstadoVerificacion.EN_CONSULTA,
+        ).update(estado=EstadoConsulta.EN_CURSO, updated_at=timezone.now())
+    )
+
+
+def _pedir_intervencion(consulta, verificacion, actor, sondeo, nota: str) -> None:
+    cambiar_estado_consulta(
+        consulta=consulta,
+        nuevo_estado=EstadoConsulta.CAPTCHA_REQUERIDO,
+        registrar_intento=True,
+        codigo_error=ANT_CAPTCHA_REQUIRED,
+        detalle_error=sondeo.evidencia,
+        latencia_ms=sondeo.latencia_ms,
+    )
+    maquina_estados.transicionar(
+        verificacion=verificacion, nuevo_estado=EstadoVerificacion.CAPTCHA_REQUERIDO, actor=actor, nota_bitacora=nota
+    )
+
+
+def _fallar_consulta(consulta, verificacion, actor, *, codigo: str, motivo: str, hasta, sondeo=None) -> None:
+    cambiar_estado_consulta(
+        consulta=consulta,
+        nuevo_estado=EstadoConsulta.FALLIDA,
+        registrar_intento=True,
+        codigo_error=codigo,
+        detalle_error=sondeo.evidencia if sondeo else motivo,
+        latencia_ms=sondeo.latencia_ms if sondeo else None,
+        proximo_intento_at=hasta,
+    )
+    maquina_estados.transicionar(
+        verificacion=verificacion,
+        nuevo_estado=EstadoVerificacion.FALLIDA,
+        actor=actor,
+        nota_bitacora=(
+            f"{motivo} {mensaje_reintento(hasta)} "
+            "No obtener un resultado no equivale a ausencia de antecedentes."
+        ),
+    )
+
+
+def ejecutar_consulta_asistida(*, consulta: ConsultaProveedor, actor=None) -> bool:
+    """
+    Comprueba el portal oficial y deja el caso en CAPTCHA_REQUERIDO para la persona operadora.
+    Devuelve False si no había nada que ejecutar (idempotente).
+
+    Tiempo agotado o 5xx: máximo dos reintentos con espera incremental y luego FALLIDA.
+    4xx: no se reintenta. 429 o disyuntor abierto: FALLIDA sin consultar, con la hora para reintentar.
+    La carga manual sigue disponible en todos los casos.
+    """
+    if not _tomar_consulta(consulta):
+        return False
+    consulta.refresh_from_db()
+    verificacion = consulta.verificacion
+    conector = ConectorAsistido()
+    salud = _salud(consulta.proveedor)
+    esperas = tuple(_config("ANTECEDENTES_ESPERAS_REINTENTO", (2, 5)))
+    reintentos = 0
+
+    while True:
+        ahora = timezone.now()
+        if salud.abierto_hasta and salud.abierto_hasta > ahora:
+            _fallar_consulta(
+                consulta, verificacion, actor,
+                codigo=salud.ultimo_codigo or ANT_SOURCE_UNAVAILABLE,
+                motivo="El portal oficial está en pausa por fallos recientes; no se consultó.",
+                hasta=salud.abierto_hasta,
+            )
+            return True
+
+        sondeo = conector.sondear()
+
+        if sondeo.clase == ClaseRespuesta.DISPONIBLE:
+            _fuente_respondio(salud)
+            _pedir_intervencion(
+                consulta, verificacion, actor, sondeo,
+                "El portal oficial responde y exige resolver un CAPTCHA: ábrelo, descarga el certificado y cárgalo.",
+            )
+            return True
+
+        if sondeo.clase == ClaseRespuesta.DENEGADA:
+            _pedir_intervencion(
+                consulta, verificacion, actor, sondeo,
+                f"El portal rechazó la comprobación automática ({sondeo.evidencia}); no se reintenta. "
+                "Ábrelo en tu navegador o carga el certificado manualmente.",
+            )
+            return True
+
+        if sondeo.clase == ClaseRespuesta.LIMITADA:
+            hasta = ahora + max(_pausa(), timedelta(seconds=sondeo.reintentar_tras or 0))
+            salud.abierto_hasta = hasta
+            salud.ultimo_codigo = ANT_RATE_LIMITED
+            salud.ultima_evidencia = sondeo.evidencia[:255]
+            salud.save()
+            _fallar_consulta(
+                consulta, verificacion, actor, codigo=ANT_RATE_LIMITED,
+                motivo="El portal oficial limitó las consultas.", hasta=hasta, sondeo=sondeo,
+            )
+            return True
+
+        # Transitoria: tiempo agotado, error de red o 5xx.
+        _fuente_fallo(salud, sondeo)
+        if reintentos >= len(esperas) or salud.abierto_hasta:
+            _fallar_consulta(
+                consulta, verificacion, actor, codigo=ANT_SOURCE_UNAVAILABLE,
+                motivo=f"El portal oficial no respondió tras {reintentos + 1} intentos.",
+                hasta=salud.abierto_hasta or ahora + _pausa(), sondeo=sondeo,
+            )
+            return True
+
+        espera = esperas[reintentos]
+        reintentos += 1
+        cambiar_estado_consulta(
+            consulta=consulta,
+            nuevo_estado=EstadoConsulta.REINTENTO_PROGRAMADO,
+            registrar_intento=True,
+            codigo_error=ANT_SOURCE_UNAVAILABLE,
+            detalle_error=sondeo.evidencia,
+            latencia_ms=sondeo.latencia_ms,
+            proximo_intento_at=ahora + timedelta(seconds=espera),
+        )
+        _esperar(espera)
+        # Durante la espera el caso pudo cargarse a mano o anularse: entonces no se insiste.
+        verificacion.refresh_from_db()
+        if verificacion.estado != EstadoVerificacion.EN_CONSULTA or not _tomar_consulta(consulta):
+            return True
+        consulta.refresh_from_db()
+
+
+def reintentar_consulta(*, verificacion: VerificacionAntecedentes, actor) -> VerificacionAntecedentes:
+    """La persona operadora pide un nuevo intento de una verificación fallida, respetando la hora indicada."""
+    if verificacion.estado != EstadoVerificacion.FALLIDA:
+        raise DomainError("Solo se puede reintentar una verificación fallida.")
+    consulta = verificacion.consultas_proveedor.get(proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR)
+    ahora = timezone.now()
+    candados = [
+        momento
+        for momento in (consulta.proximo_intento_at, fuente_en_pausa_hasta(consulta.proveedor))
+        if momento and momento > ahora
+    ]
+    if candados:
+        raise DomainError(f"Podrás reintentar después de las {_hora(max(candados))}; mientras tanto puedes cargar el certificado manualmente.")
+
+    try:
+        with transaction.atomic():
+            maquina_estados.transicionar(
+                verificacion=verificacion,
+                nuevo_estado=EstadoVerificacion.LISTA,
+                actor=actor,
+                nota_bitacora="Nuevo intento solicitado.",
+                modo_conector=_modo_del_conector(obtener_conector()),
+            )
+    except IntegrityError:
+        verificacion.refresh_from_db()
+        raise DomainError("La persona ya tiene otra solicitud en curso para esta finalidad; continúa con esa.")
+    cambiar_estado_consulta(consulta=consulta, nuevo_estado=EstadoConsulta.PENDIENTE)
+    _arrancar_conector(verificacion, actor)
+    return verificacion
+
+
+def continuar_consulta(*, verificacion: VerificacionAntecedentes, actor) -> str:
+    """S4: la persona operadora abre el portal oficial en su navegador para resolver el CAPTCHA."""
+    if verificacion.estado == EstadoVerificacion.CAPTCHA_REQUERIDO:
+        consulta = verificacion.consultas_proveedor.get(proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR)
+        with transaction.atomic():
+            maquina_estados.transicionar(
+                verificacion=verificacion,
+                nuevo_estado=EstadoVerificacion.EN_CONSULTA,
+                actor=actor,
+                nota_bitacora="Se abrió el portal oficial para resolver la intervención humana.",
+            )
+            cambiar_estado_consulta(consulta=consulta, nuevo_estado=EstadoConsulta.EN_CURSO)
+    elif verificacion.estado != EstadoVerificacion.EN_CONSULTA:
+        raise DomainError("La consulta asistida no está disponible en este estado.")
+    return ConectorAsistido.url_portal
 
 
 @transaction.atomic
@@ -258,6 +508,7 @@ def cambiar_estado_consulta(
     detalle_error: str = "",
     codigo_error: str = "",
     proximo_intento_at=None,
+    latencia_ms=None,
 ) -> ConsultaProveedor:
     """ÚNICO escritor de `ConsultaProveedor.estado`; un intento de integración queda en `IntentoConsulta`."""
     if nuevo_estado not in EstadoConsulta.values:
@@ -279,6 +530,7 @@ def cambiar_estado_consulta(
             numero=consulta.intentos,
             estado_resultante=nuevo_estado,
             codigo_error=codigo_error,
+            latencia_ms=latencia_ms,
             detalle=detalle_error,
         )
     return consulta

@@ -38,6 +38,46 @@
     </p>
   {% endif %}
 
+  {% if consulta_asistida %}
+    <div class="sc-banner">
+      <div>
+        <p class="sc-banner__titulo">Consulta asistida en el portal del Ministerio del Interior</p>
+        <p class="sc-banner__detalle">
+          Abre el portal en otra pestaña, pega la cédula, resuelve el CAPTCHA, descarga el certificado y cárgalo aquí.
+          SIGECOP no resuelve el CAPTCHA por ti.
+        </p>
+        <div class="sc-campo" style="margin:12px 0; max-width:260px;">
+          <label for="cedula-consulta">Cédula</label>
+          <input id="cedula-consulta" type="text" readonly value="{{ verificacion.persona.numero_documento }}" onclick="this.select()">
+        </div>
+      </div>
+      <form method="post" target="_blank">
+        {% csrf_token %}
+        <input type="hidden" name="accion" value="continuar">
+        <button type="submit" class="sc-boton-primario">Abrir portal del Ministerio</button>
+      </form>
+    </div>
+  {% endif %}
+
+  {% if verificacion.estado == "FALLIDA" %}
+    <div class="sc-banner">
+      <div>
+        <p class="sc-banner__titulo">No se pudo consultar el portal oficial</p>
+        <p class="sc-banner__detalle">
+          {% if reintentar_desde %}Podrás reintentar después de las {{ reintentar_desde|time:"H:i" }}.{% else %}Ya puedes volver a intentarlo.{% endif %}
+          La carga manual del certificado sigue disponible.
+        </p>
+      </div>
+      {% if not reintentar_desde %}
+        <form method="post">
+          {% csrf_token %}
+          <input type="hidden" name="accion" value="reintentar">
+          <button type="submit" class="sc-boton-secundario">Reintentar consulta</button>
+        </form>
+      {% endif %}
+    </div>
+  {% endif %}
+
   {% if puede_cargar %}
     <div class="sc-banner">
       <div class="sc-banner__icono">

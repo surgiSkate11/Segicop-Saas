@@ -140,6 +140,16 @@ CELERY_BEAT_SCHEDULE = {
     },
 }
 
+# Antecedentes penales (consulta asistida al portal oficial; nunca se resuelve el CAPTCHA).
+# "asistido": comprueba el portal y deja el caso listo para que una persona lo consulte; "manual": solo carga manual.
+ANTECEDENTES_CONECTOR_MODE = env("ANTECEDENTES_CONECTOR_MODE", default="asistido")
+# False: la comprobación corre en la misma petición (no requiere worker). True: se encola en Celery.
+ANTECEDENTES_CONSULTA_ASINCRONA = env.bool("ANTECEDENTES_CONSULTA_ASINCRONA", default=False)
+ANTECEDENTES_SONDEO_TIMEOUT = 5  # segundos por intento
+ANTECEDENTES_ESPERAS_REINTENTO = (2, 5)  # tiempo agotado o 5xx: máximo dos reintentos, espera incremental
+ANTECEDENTES_CIRCUITO_UMBRAL = 3  # fallos seguidos que pausan la fuente
+ANTECEDENTES_CIRCUITO_PAUSA = 600  # segundos de pausa; es la hora que se indica para reintentar
+
 OTEL_ENABLED = env.bool("OTEL_ENABLED", default=False)
 OTEL_SERVICE_NAME = env("OTEL_SERVICE_NAME", default="sigecop")
 OTEL_EXPORTER_OTLP_ENDPOINT = env("OTEL_EXPORTER_OTLP_ENDPOINT", default="")

@@ -1,4 +1,6 @@
 import importlib
+import urllib.error
+from email.message import Message
 from datetime import date, timedelta
 from itertools import count, product
 from unittest import mock
@@ -28,7 +30,10 @@ from apps.antecedentes.models import (
     ResultadoAntecedentes,
     VerificacionAntecedentes,
 )
-from apps.antecedentes.tasks import preparar_consulta_asistida
+from apps.antecedentes.conectores.base import ClaseRespuesta, ResultadoSondeo
+from apps.antecedentes.conectores.ministerio import PORTAL_URL, sondear_portal
+from apps.antecedentes.models import SaludFuente
+from apps.antecedentes.tasks import ejecutar_consulta_asistida
 from apps.core.choices import EstadoCumplimiento
 from apps.core.exceptions import DomainError, TransicionEstadoInvalida
 from apps.core.models import EventoAuditoria
@@ -59,8 +64,23 @@ TRANSICIONES_ESPERADAS = {
 }
 
 
+DISPONIBLE = ResultadoSondeo(ClaseRespuesta.DISPONIBLE, codigo_http=200, latencia_ms=120, evidencia="HTTP 200 · 120 ms")
+
+
+def caido(codigo=503):
+    return ResultadoSondeo(ClaseRespuesta.TRANSITORIA, codigo_http=codigo, latencia_ms=80, evidencia=f"HTTP {codigo} · 80 ms")
+
+
+# El modo por defecto del proyecto es asistido; las pruebas fijan manual y cada una declara el modo que prueba.
+@override_settings(ANTECEDENTES_CONECTOR_MODE="manual")
 class BaseAntecedentesTests(TestCase):
     def setUp(self):
+        # Ninguna prueba sale a la red: el portal "responde" salvo que la prueba diga otra cosa.
+        self.sondeo = mock.patch(
+            "apps.antecedentes.conectores.asistido.sondear_portal", return_value=DISPONIBLE
+        ).start()
+        self.esperar = mock.patch.object(services, "_esperar").start()
+        self.addCleanup(mock.patch.stopall)
         self.organizacion = Organizacion.objects.create(nombre="Organización de antecedentes")
         self.usuario = Usuario.objects.create_user(
             email="revisor@example.com", nombre_completo="Revisor de antecedentes"
@@ -96,12 +116,9 @@ class BaseAntecedentesTests(TestCase):
     def crear_verificacion(self, estado=E.CREADA, persona=None, **campos):
         # Una persona nueva por defecto: solo puede haber una solicitud activa por persona y finalidad.
         persona = persona or self.crear_persona()
+        campos.setdefault("modo_conector", ModoConector.MANUAL)
         return VerificacionAntecedentes.objects.create(
-            organizacion=persona.organizacion,
-            persona=persona,
-            modo_conector=ModoConector.MANUAL,
-            estado=estado,
-            **campos,
+            organizacion=persona.organizacion, persona=persona, estado=estado, **campos
         )
 
     def autorizar(self, persona=None, finalidad=F.HABILITACION_INGRESO):
@@ -284,18 +301,21 @@ class ConsultaProveedorTests(BaseAntecedentesTests):
         self.assertEqual(consulta.estado, EstadoConsulta.PENDIENTE)
 
     def test_tarea_asistida_pasa_por_el_servicio_y_es_idempotente(self):
+        verificacion = self.crear_verificacion(estado=E.EN_CONSULTA, modo_conector=ModoConector.ASISTIDO)
         consulta = ConsultaProveedor.objects.create(
-            verificacion=self.crear_verificacion(), proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR
+            verificacion=verificacion, proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR
         )
 
-        preparar_consulta_asistida(str(consulta.pk))
-        segunda = preparar_consulta_asistida(str(consulta.pk))
+        primera = ejecutar_consulta_asistida(str(consulta.pk))
+        segunda = ejecutar_consulta_asistida(str(consulta.pk))
 
         consulta.refresh_from_db()
-        self.assertEqual(consulta.estado, EstadoConsulta.CAPTCHA_REQUERIDO)
+        verificacion.refresh_from_db()
+        self.assertEqual((verificacion.estado, consulta.estado), (E.CAPTCHA_REQUERIDO, EstadoConsulta.CAPTCHA_REQUERIDO))
         self.assertEqual(consulta.intentos, 1)
         self.assertEqual(IntentoConsulta.objects.filter(consulta=consulta).count(), 1)
-        self.assertTrue(segunda["omitida"])
+        self.assertEqual(self.sondeo.call_count, 1)
+        self.assertEqual((primera["omitida"], segunda["omitida"]), (False, True))
 
 
 class IniciarVerificacionTests(BaseAntecedentesTests):
@@ -362,7 +382,7 @@ class IniciarVerificacionTests(BaseAntecedentesTests):
         self.assertEqual(
             {v.estado for v in respuesta.context["verificaciones"]},
             {
-                E.AUTORIZACION_PENDIENTE, E.LISTA, E.CAPTCHA_REQUERIDO, E.PDF_RECIBIDO,
+                E.AUTORIZACION_PENDIENTE, E.LISTA, E.EN_CONSULTA, E.CAPTCHA_REQUERIDO, E.PDF_RECIBIDO,
                 E.REQUIERE_REVISION, E.AUTENTICIDAD_PENDIENTE, E.FALLIDA,
             },
         )
@@ -595,7 +615,8 @@ class AutorizacionGatingTests(BaseAntecedentesTests):
         self.assertEqual((manual.estado, manual.autorizacion), (E.LISTA, autorizacion))
         self.assertEqual(asistido.estado, E.CAPTCHA_REQUERIDO)
         self.assertEqual(asistido.autorizacion.persona, asistido_persona)
-        self.assertEqual(len(callbacks), 1)
+        self.assertEqual(callbacks, [])  # síncrono por defecto: nada queda encolado
+        self.assertEqual(self.sondeo.call_count, 1)
 
     def test_autorizacion_revocada_otra_organizacion_u_otra_finalidad_no_cuentan(self):
         otra_organizacion = Organizacion.objects.create(nombre="Otra organización")
@@ -684,10 +705,12 @@ class RegistrarAutorizacionTests(BaseAntecedentesTests):
             with self.captureOnCommitCallbacks(execute=False) as callbacks:
                 self.autorizar()
 
+        # Síncrona por defecto: el portal se comprueba en el acto, sin esperar a una cola.
         pendiente.refresh_from_db()
         self.assertEqual(pendiente.estado, E.CAPTCHA_REQUERIDO)
         self.assertEqual(pendiente.modo_conector, ModoConector.ASISTIDO)
-        self.assertEqual(len(callbacks), 1)
+        self.assertEqual(callbacks, [])
+        self.assertEqual(self.sondeo.call_count, 1)
 
     def test_referencia_es_obligatoria_para_documento_firmado_y_otro(self):
         for medio in (MedioAutorizacion.DOCUMENTO_FIRMADO, MedioAutorizacion.OTRO):
@@ -1527,3 +1550,367 @@ class PdfSeguroTests(TestCase):
         archivo = SimpleUploadedFile("../documento\x00.pdf", b"%PDF-1.7\n%%EOF")
 
         self.assertEqual(_validar_pdf_seguro(archivo), "El nombre del archivo no es válido.")
+
+
+@override_settings(ANTECEDENTES_CONECTOR_MODE="asistido")
+class ConsultaAsistidaTests(BaseAntecedentesTests):
+    """S2-S4: comprobación del portal con reintentos limitados, disyuntor y carga manual siempre disponible."""
+
+    def setUp(self):
+        super().setUp()
+        self.operador = self.crear_usuario("operador@example.com", "operador_antecedentes")
+        self.autorizar()
+
+    def consulta(self, verificacion):
+        return verificacion.consultas_proveedor.get(proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR)
+
+    def bitacora(self, verificacion):
+        return list(verificacion.ejecuciones.order_by("created_at").values_list("estado_resultante", flat=True))
+
+    def hora(self, momento):
+        return timezone.localtime(momento).strftime("%H:%M")
+
+    def fallar_portal(self, persona=None):
+        """Deja una verificación FALLIDA por portal caído (3 intentos) y devuelve (verificacion, consulta)."""
+        if persona:
+            self.autorizar(persona=persona)
+        self.sondeo.return_value = caido()
+        verificacion, _ = self.iniciar("asistido", persona=persona)
+        verificacion.refresh_from_db()
+        return verificacion, self.consulta(verificacion)
+
+    def portal_disponible(self):
+        self.sondeo.reset_mock()
+        self.sondeo.side_effect = None
+        self.sondeo.return_value = DISPONIBLE
+
+    def test_portal_disponible_pide_intervencion_humana_sin_reintentar(self):
+        verificacion, _ = self.iniciar("asistido")
+
+        consulta = self.consulta(verificacion)
+        self.assertEqual(verificacion.estado, E.CAPTCHA_REQUERIDO)
+        self.assertEqual(
+            (consulta.estado, consulta.codigo_error, consulta.intentos, consulta.requiere_intervencion),
+            (EstadoConsulta.CAPTCHA_REQUERIDO, "ANT_CAPTCHA_REQUIRED", 1, True),
+        )
+        intento = consulta.intentos_detalle.get()
+        self.assertEqual((intento.latencia_ms, intento.detalle), (120, "HTTP 200 · 120 ms"))
+        self.sondeo.assert_called_once_with(PORTAL_URL, 5)
+        self.esperar.assert_not_called()
+
+    def test_tiempo_agotado_o_5xx_reintenta_dos_veces_con_espera_incremental_y_luego_falla(self):
+        antes = timezone.now()
+        self.sondeo.side_effect = [caido(503), caido(504), caido(502)]
+
+        verificacion, _ = self.iniciar("asistido")
+
+        consulta = self.consulta(verificacion)
+        self.assertEqual(self.sondeo.call_count, 3)
+        self.assertEqual([c.args for c in self.esperar.call_args_list], [(2,), (5,)])
+        self.assertEqual(verificacion.estado, E.FALLIDA)
+        self.assertEqual(self.bitacora(verificacion), [E.LISTA, E.EN_CONSULTA, E.FALLIDA])
+        self.assertEqual(
+            (consulta.estado, consulta.codigo_error, consulta.intentos),
+            (EstadoConsulta.FALLIDA, "ANT_SOURCE_UNAVAILABLE", 3),
+        )
+        self.assertEqual(
+            list(consulta.intentos_detalle.order_by("numero").values_list("estado_resultante", flat=True)),
+            [EstadoConsulta.REINTENTO_PROGRAMADO, EstadoConsulta.REINTENTO_PROGRAMADO, EstadoConsulta.FALLIDA],
+        )
+        # El disyuntor se abrió (3 fallos seguidos): esa es la hora a partir de la cual reintentar.
+        salud = SaludFuente.objects.get(proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR)
+        self.assertEqual(salud.fallos_consecutivos, 3)
+        self.assertGreaterEqual(salud.abierto_hasta, antes + timedelta(seconds=600))
+        self.assertEqual(consulta.proximo_intento_at, salud.abierto_hasta)
+        nota = verificacion.ejecuciones.get(estado_resultante=E.FALLIDA).detalle
+        self.assertIn(f"Vuelve a intentarlo después de las {self.hora(salud.abierto_hasta)}", nota)
+        self.assertIn("carga el certificado manualmente", nota)
+        self.assertIn("no equivale a ausencia de antecedentes", nota)
+
+    def test_un_reintento_exitoso_pide_intervencion_y_cierra_el_disyuntor(self):
+        self.sondeo.side_effect = [caido(), DISPONIBLE]
+
+        verificacion, _ = self.iniciar("asistido")
+
+        consulta = self.consulta(verificacion)
+        self.assertEqual((verificacion.estado, consulta.intentos), (E.CAPTCHA_REQUERIDO, 2))
+        self.assertEqual([c.args for c in self.esperar.call_args_list], [(2,)])
+        salud = SaludFuente.objects.get()
+        self.assertEqual((salud.fallos_consecutivos, salud.abierto_hasta), (0, None))
+
+    def test_4xx_no_se_reintenta_registra_evidencia_minima_y_pide_intervencion(self):
+        self.sondeo.return_value = ResultadoSondeo(
+            ClaseRespuesta.DENEGADA, codigo_http=403, latencia_ms=90, evidencia="HTTP 403 · 90 ms"
+        )
+
+        verificacion, _ = self.iniciar("asistido")
+
+        consulta = self.consulta(verificacion)
+        self.assertEqual(self.sondeo.call_count, 1)
+        self.esperar.assert_not_called()
+        self.assertEqual(verificacion.estado, E.CAPTCHA_REQUERIDO)
+        self.assertEqual((consulta.codigo_error, consulta.detalle_error), ("ANT_CAPTCHA_REQUIRED", "HTTP 403 · 90 ms"))
+        self.assertIn("no se reintenta", verificacion.ejecuciones.get(estado_resultante=E.CAPTCHA_REQUERIDO).detalle)
+        self.assertFalse(SaludFuente.objects.filter(fallos_consecutivos__gt=0).exists())
+
+    def test_429_no_se_reintenta_y_pausa_la_fuente_respetando_retry_after(self):
+        antes = timezone.now()
+        self.sondeo.return_value = ResultadoSondeo(
+            ClaseRespuesta.LIMITADA, codigo_http=429, latencia_ms=50, evidencia="HTTP 429 · 50 ms", reintentar_tras=3600
+        )
+
+        verificacion, _ = self.iniciar("asistido")
+
+        consulta = self.consulta(verificacion)
+        self.assertEqual(self.sondeo.call_count, 1)
+        self.esperar.assert_not_called()
+        self.assertEqual((verificacion.estado, consulta.codigo_error), (E.FALLIDA, "ANT_RATE_LIMITED"))
+        salud = SaludFuente.objects.get()
+        self.assertGreaterEqual(salud.abierto_hasta, antes + timedelta(seconds=3600))
+        self.assertEqual(consulta.proximo_intento_at, salud.abierto_hasta)
+
+    def test_con_el_disyuntor_abierto_otra_verificacion_no_consulta_el_portal(self):
+        self.fallar_portal()
+        self.portal_disponible()
+        otra = self.crear_persona()
+        self.autorizar(persona=otra)
+
+        verificacion, _ = self.iniciar("asistido", persona=otra)
+
+        self.sondeo.assert_not_called()
+        consulta = self.consulta(verificacion)
+        salud = SaludFuente.objects.get()
+        self.assertEqual((verificacion.estado, consulta.codigo_error), (E.FALLIDA, "ANT_SOURCE_UNAVAILABLE"))
+        self.assertEqual(consulta.proximo_intento_at, salud.abierto_hasta)
+        self.assertIn(self.hora(salud.abierto_hasta), verificacion.ejecuciones.get(estado_resultante=E.FALLIDA).detalle)
+
+    def test_vencida_la_pausa_el_portal_se_vuelve_a_consultar(self):
+        self.fallar_portal()
+        SaludFuente.objects.update(abierto_hasta=timezone.now() - timedelta(seconds=1))
+        self.portal_disponible()
+        otra = self.crear_persona()
+        self.autorizar(persona=otra)
+
+        verificacion, _ = self.iniciar("asistido", persona=otra)
+
+        self.assertEqual(verificacion.estado, E.CAPTCHA_REQUERIDO)
+        salud = SaludFuente.objects.get()
+        self.assertEqual((salud.fallos_consecutivos, salud.abierto_hasta), (0, None))
+
+    def test_si_el_caso_cambia_durante_la_espera_se_detiene_sin_consultar_de_nuevo(self):
+        self.sondeo.return_value = caido()
+        self.esperar.side_effect = lambda _segundos: VerificacionAntecedentes.objects.update(estado=E.CANCELADA)
+
+        verificacion, _ = self.iniciar("asistido")
+
+        self.assertEqual(self.sondeo.call_count, 1)
+        self.assertEqual(verificacion.estado, E.CANCELADA)
+        self.assertEqual(self.bitacora(verificacion), [E.LISTA, E.EN_CONSULTA])
+
+    def test_reintentar_antes_de_la_hora_indicada_se_rechaza_sin_cambios(self):
+        verificacion, consulta = self.fallar_portal()
+        self.portal_disponible()
+        intentos = IntentoConsulta.objects.count()
+
+        with self.assertRaisesMessage(DomainError, f"después de las {self.hora(consulta.proximo_intento_at)}"):
+            services.reintentar_consulta(verificacion=verificacion, actor=self.operador)
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.FALLIDA)
+        self.assertEqual(IntentoConsulta.objects.count(), intentos)
+        self.sondeo.assert_not_called()
+
+    def test_reintentar_despues_de_la_hora_vuelve_a_consultar(self):
+        verificacion, consulta = self.fallar_portal()
+        pasado = timezone.now() - timedelta(seconds=1)
+        ConsultaProveedor.objects.update(proximo_intento_at=pasado)
+        SaludFuente.objects.update(abierto_hasta=pasado)
+        self.portal_disponible()
+
+        services.reintentar_consulta(verificacion=verificacion, actor=self.operador)
+
+        verificacion.refresh_from_db()
+        consulta.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.CAPTCHA_REQUERIDO)
+        self.assertEqual(self.bitacora(verificacion)[-4:], [E.FALLIDA, E.LISTA, E.EN_CONSULTA, E.CAPTCHA_REQUERIDO])
+        self.assertEqual(
+            (consulta.estado, consulta.intentos, consulta.proximo_intento_at),
+            (EstadoConsulta.CAPTCHA_REQUERIDO, 4, None),
+        )
+
+    def test_reintentar_con_otra_solicitud_activa_se_rechaza_sin_cambios(self):
+        verificacion, _ = self.fallar_portal()
+        ConsultaProveedor.objects.update(proximo_intento_at=None)
+        SaludFuente.objects.update(abierto_hasta=None)
+        self.portal_disponible()
+        _, creada = self.iniciar("asistido")
+        self.assertTrue(creada)
+
+        with self.assertRaisesMessage(DomainError, "otra solicitud en curso"):
+            services.reintentar_consulta(verificacion=verificacion, actor=self.operador)
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.FALLIDA)
+        self.assertEqual(self.bitacora(verificacion)[-1], E.FALLIDA)
+
+    def test_reintentar_solo_aplica_a_verificaciones_fallidas(self):
+        verificacion, _ = self.iniciar("asistido")
+
+        with self.assertRaises(DomainError):
+            services.reintentar_consulta(verificacion=verificacion, actor=self.operador)
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.CAPTCHA_REQUERIDO)
+
+    def test_continuar_abre_el_portal_y_reanuda_la_consulta(self):
+        verificacion, _ = self.iniciar("asistido")
+
+        url = services.continuar_consulta(verificacion=verificacion, actor=self.operador)
+
+        verificacion.refresh_from_db()
+        self.assertEqual(url, PORTAL_URL)
+        self.assertEqual(verificacion.estado, E.EN_CONSULTA)
+        self.assertEqual(self.consulta(verificacion).estado, EstadoConsulta.EN_CURSO)
+        # Volver a abrir la pestaña no duplica transiciones.
+        self.assertEqual(services.continuar_consulta(verificacion=verificacion, actor=self.operador), PORTAL_URL)
+        self.assertEqual(self.bitacora(verificacion), [E.LISTA, E.EN_CONSULTA, E.CAPTCHA_REQUERIDO, E.EN_CONSULTA])
+
+    def test_continuar_fuera_de_la_consulta_asistida_se_rechaza(self):
+        verificacion = self.crear_verificacion(estado=E.LISTA)
+
+        with self.assertRaises(DomainError):
+            services.continuar_consulta(verificacion=verificacion, actor=self.operador)
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.LISTA)
+
+    def test_la_carga_manual_sigue_disponible_tras_continuar_o_fallar(self):
+        verificacion, _ = self.iniciar("asistido")
+        services.continuar_consulta(verificacion=verificacion, actor=self.operador)
+        fallida, _ = self.fallar_portal(persona=self.crear_persona())
+
+        for caso in (verificacion, fallida):
+            with self.subTest(estado=caso.estado):
+                services.registrar_resultado_manual(verificacion=caso, actor=self.operador, resultado=ResultadoAntecedentes.NO)
+                caso.refresh_from_db()
+                self.assertEqual(caso.estado, E.REQUIERE_REVISION)
+
+    @override_settings(ANTECEDENTES_CONSULTA_ASINCRONA=True)
+    def test_en_modo_asincrono_la_consulta_se_encola_al_confirmar(self):
+        with mock.patch("apps.antecedentes.tasks.ejecutar_consulta_asistida.delay") as delay:
+            with self.captureOnCommitCallbacks(execute=True):
+                verificacion, _ = self.iniciar("asistido")
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.EN_CONSULTA)
+        delay.assert_called_once_with(str(self.consulta(verificacion).pk))
+        self.sondeo.assert_not_called()
+
+    # --- vistas ---
+
+    def detalle(self, verificacion, usuario=None):
+        self.client.force_login(usuario or self.operador)
+        return self.client.get(reverse("antecedentes:detalle", args=[verificacion.pk]))
+
+    def test_detalle_ofrece_abrir_el_portal_con_la_cedula_lista_para_copiar(self):
+        verificacion, _ = self.iniciar("asistido")
+
+        respuesta = self.detalle(verificacion)
+
+        self.assertContains(respuesta, 'value="continuar"')
+        self.assertContains(respuesta, 'target="_blank"')
+        self.assertContains(respuesta, f'value="{self.persona.numero_documento}"')
+
+    def test_post_continuar_redirige_al_portal_oficial(self):
+        verificacion, _ = self.iniciar("asistido")
+        self.client.force_login(self.operador)
+
+        respuesta = self.client.post(reverse("antecedentes:detalle", args=[verificacion.pk]), {"accion": "continuar"})
+
+        self.assertRedirects(respuesta, PORTAL_URL, fetch_redirect_response=False)
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.EN_CONSULTA)
+
+    def test_detalle_de_una_fallida_indica_la_hora_para_reintentar_y_ofrece_la_carga_manual(self):
+        verificacion, consulta = self.fallar_portal()
+
+        respuesta = self.detalle(verificacion)
+
+        self.assertContains(respuesta, f"Podrás reintentar después de las {self.hora(consulta.proximo_intento_at)}")
+        self.assertNotContains(respuesta, 'value="reintentar"')
+        self.assertContains(respuesta, 'value="cargar_resultado"')
+
+    def test_post_reintentar_vuelve_a_consultar_cuando_ya_se_puede(self):
+        verificacion, _ = self.fallar_portal()
+        ConsultaProveedor.objects.update(proximo_intento_at=None)
+        SaludFuente.objects.update(abierto_hasta=None)
+        self.portal_disponible()
+        self.assertContains(self.detalle(verificacion), 'value="reintentar"')
+
+        respuesta = self.client.post(reverse("antecedentes:detalle", args=[verificacion.pk]), {"accion": "reintentar"})
+
+        self.assertRedirects(respuesta, reverse("antecedentes:detalle", args=[verificacion.pk]))
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.CAPTCHA_REQUERIDO)
+
+    def test_sin_rol_no_se_puede_continuar_ni_reintentar(self):
+        verificacion, _ = self.iniciar("asistido")
+        self.client.force_login(self.crear_usuario("ajeno@example.com"))
+
+        for accion in ("continuar", "reintentar"):
+            with self.subTest(accion=accion):
+                respuesta = self.client.post(reverse("antecedentes:detalle", args=[verificacion.pk]), {"accion": accion})
+                self.assertEqual(respuesta.status_code, 403)
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.CAPTCHA_REQUERIDO)
+
+
+class SondeoPortalTests(TestCase):
+    """Clasificación de la respuesta del portal: una sola petición, sin datos personales ni lectura del cuerpo."""
+
+    def sondear(self, efecto):
+        with mock.patch("apps.antecedentes.conectores.ministerio.urllib.request.urlopen", side_effect=efecto) as urlopen:
+            resultado = sondear_portal(PORTAL_URL, 5)
+        return resultado, urlopen
+
+    def http_error(self, codigo, cabeceras=None):
+        mensaje = Message()
+        for nombre, valor in (cabeceras or {}).items():
+            mensaje[nombre] = valor
+        return urllib.error.HTTPError(PORTAL_URL, codigo, "error", mensaje, None)
+
+    def test_respuesta_2xx_es_disponible_y_la_peticion_no_lleva_datos_personales(self):
+        respuesta = mock.MagicMock(status=200)
+        respuesta.__enter__.return_value = respuesta
+
+        resultado, urlopen = self.sondear([respuesta])
+
+        self.assertEqual((resultado.clase, resultado.codigo_http), (ClaseRespuesta.DISPONIBLE, 200))
+        self.assertTrue(resultado.evidencia.startswith("HTTP 200 · "))
+        peticion = urlopen.call_args.args[0]
+        self.assertEqual((peticion.full_url, peticion.get_method(), peticion.data), (PORTAL_URL, "GET", None))
+        self.assertIn("SIGECOP", peticion.get_header("User-agent"))
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 5)
+        respuesta.read.assert_not_called()
+
+    def test_5xx_tiempo_agotado_y_error_de_red_son_transitorios(self):
+        for efecto, evidencia in (
+            (self.http_error(503), "HTTP 503 · "),
+            (TimeoutError("timed out"), "Sin respuesta (TimeoutError) · "),
+            (urllib.error.URLError(ConnectionRefusedError()), "Sin respuesta (ConnectionRefusedError) · "),
+        ):
+            with self.subTest(efecto=efecto):
+                resultado, _ = self.sondear([efecto])
+                self.assertEqual(resultado.clase, ClaseRespuesta.TRANSITORIA)
+                self.assertTrue(resultado.evidencia.startswith(evidencia), resultado.evidencia)
+
+    def test_4xx_es_denegado_y_429_es_limitado_con_retry_after(self):
+        denegado, _ = self.sondear([self.http_error(403)])
+        limitado, _ = self.sondear([self.http_error(429, {"Retry-After": "120"})])
+        sin_cabecera, _ = self.sondear([self.http_error(429)])
+
+        self.assertEqual((denegado.clase, denegado.codigo_http), (ClaseRespuesta.DENEGADA, 403))
+        self.assertTrue(denegado.evidencia.startswith("HTTP 403 · "))
+        self.assertEqual((limitado.clase, limitado.reintentar_tras), (ClaseRespuesta.LIMITADA, 120))
+        self.assertIsNone(sin_cabecera.reintentar_tras)
