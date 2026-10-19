@@ -1,0 +1,110 @@
+{% extends "portal/base_portal.html" %}
+
+{% block titulo %}Mi empresa · SIGECOP{% endblock %}
+{% block nav_portal %}
+  <a href="{% url 'portal:empresa' %}" class="sc-nav-item activo">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9h10M7 13h10M7 17h6"/></svg>
+    <span class="sc-nav-label">Mi empresa</span>
+  </a>
+{% endblock %}
+{% block migas %}Mi portal <span class="sc-migas__sep">/</span> <strong>Mi empresa</strong>{% endblock %}
+
+{% block contenido %}
+  <div class="sc-cabecera-lista">
+    <div>
+      <p class="sc-etiqueta-seccion">Mi portal</p>
+      <h1>Mi empresa</h1>
+      <p class="sc-subtitulo !mb-0">Consulta tus datos, tu estado de cumplimiento, tu personal y tus contratos.</p>
+    </div>
+  </div>
+
+  {% for ficha in fichas %}
+    {% with empresa=ficha.empresa %}
+      <div class="sc-seccion-cabecera">
+        <div>
+          <p class="sc-etiqueta-seccion">{{ empresa.organizacion.nombre }}</p>
+          <h2>{{ empresa.razon_social }}</h2>
+        </div>
+        <span class="sc-estado sc-estado--{{ empresa.estado|lower }}">{{ empresa.get_estado_display }}</span>
+      </div>
+
+      <div class="sc-tabla-envoltorio">
+        <table class="sc-tabla">
+          <tbody>
+            <tr><th>Razón social</th><td>{{ empresa.razon_social }}</td></tr>
+            <tr><th>RUC</th><td><span class="sc-dato-mono">{{ empresa.ruc }}</span></td></tr>
+            <tr><th>Organización</th><td>{{ empresa.organizacion.nombre }}</td></tr>
+            <tr><th>Representante legal</th><td>{{ empresa.representante_legal|default:"—" }}</td></tr>
+            <tr><th>Correo de contacto</th><td>{{ empresa.contacto_email|default:"—" }}</td></tr>
+            <tr><th>Teléfono de contacto</th><td>{{ empresa.contacto_telefono|default:"—" }}</td></tr>
+            <tr>
+              <th>Estado de cumplimiento</th>
+              <td><span class="sc-estado sc-estado--{{ empresa.estado|lower }}">{{ empresa.get_estado_display }}</span></td>
+            </tr>
+            <tr><th>Motivo</th><td>{{ empresa.motivo_estado|default:"Sin observaciones." }}</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="sc-seccion-cabecera">
+        <div>
+          <p class="sc-etiqueta-seccion">Personal</p>
+          <h2>Mi personal</h2>
+        </div>
+      </div>
+      {% if ficha.asignaciones %}
+        <div class="sc-tabla-envoltorio">
+          <table class="sc-tabla">
+            <thead><tr><th>Nombre</th><th>Documento</th><th>Cargo</th><th>Estado</th></tr></thead>
+            <tbody>
+              {% for asignacion in ficha.asignaciones %}
+                <tr>
+                  <td>{{ asignacion.persona.nombre_completo }}</td>
+                  <td><span class="sc-dato-mono">{{ asignacion.persona.numero_documento }}</span></td>
+                  <td>{{ asignacion.cargo_o_actividad }}</td>
+                  <td><span class="sc-estado sc-estado--{{ asignacion.persona.estado|lower }}">{{ asignacion.persona.get_estado_display }}</span></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="sc-vacio">
+          <p>Aún no tienes personal asignado.</p>
+        </div>
+      {% endif %}
+
+      <div class="sc-seccion-cabecera">
+        <div>
+          <p class="sc-etiqueta-seccion">Contratos</p>
+          <h2>Mis contratos</h2>
+        </div>
+      </div>
+      {% if ficha.contratos %}
+        <div class="sc-tabla-envoltorio">
+          <table class="sc-tabla">
+            <thead><tr><th>Número</th><th>Objeto</th><th>Vigencia</th></tr></thead>
+            <tbody>
+              {% for contrato in ficha.contratos %}
+                <tr>
+                  <td><span class="sc-dato-mono">{{ contrato.numero }}</span></td>
+                  <td>{{ contrato.objeto }}</td>
+                  <td>{{ contrato.fecha_inicio|date:"d/m/Y" }} al {{ contrato.fecha_fin|date:"d/m/Y" }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="sc-vacio">
+          <p>No tienes contratos activos.</p>
+        </div>
+      {% endif %}
+    {% endwith %}
+  {% empty %}
+    <div class="sc-vacio">
+      <p>Tu cuenta no tiene empresas vinculadas.</p>
+    </div>
+  {% endfor %}
+{% endblock %}
+
