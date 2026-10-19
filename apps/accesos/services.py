@@ -20,6 +20,11 @@ class ResultadoHabilitacion:
 _ESTADOS_HABILITANTES = {EstadoCumplimiento.HABILITADO, EstadoCumplimiento.HABILITADO_CON_CONDICIONES}
 
 
+# S8: un solo motivo para "sin verificación", "vencida" y "con hallazgos": quien lo lee (garita,
+# solicitantes, trabajos) no puede deducir el resultado de antecedentes.
+MOTIVO_ANTECEDENTES = "Antecedentes penales sin habilitación vigente; el área de antecedentes debe revisarlo."
+
+
 def calcular_habilitacion(persona: Persona) -> ResultadoHabilitacion:
     """
     RN-007: SOLO LECTURA. No escribe en Persona, EmpresaContratista ni
@@ -40,17 +45,19 @@ def calcular_habilitacion(persona: Persona) -> ResultadoHabilitacion:
 
     hoy = timezone.now().date()
     verificacion = (
-        persona.verificaciones_antecedentes.filter(estado=EstadoVerificacion.VALIDADA).order_by("-created_at").first()
+        # Una autorización revocada deja de habilitar: la verificación se conserva, pero ya no se usa.
+        persona.verificaciones_antecedentes.filter(estado=EstadoVerificacion.VALIDADA)
+        .exclude(autorizacion__revocada_en__isnull=False)
+        .order_by("-created_at")
+        .first()
     )
-    if not verificacion:
-        return ResultadoHabilitacion(False, "No hay una verificación de antecedentes validada.")
-    if verificacion.vigente_hasta and verificacion.vigente_hasta < hoy:
-        return ResultadoHabilitacion(False, "La verificación de antecedentes validada ya venció.")
-    if verificacion.resultado != ResultadoAntecedentes.NO:
-        return ResultadoHabilitacion(
-            False,
-            f"El resultado de antecedentes es '{verificacion.get_resultado_display()}' y requiere revisión humana adicional.",
-        )
+    if (
+        not verificacion
+        or not verificacion.vigente_hasta
+        or verificacion.vigente_hasta < hoy
+        or verificacion.resultado != ResultadoAntecedentes.NO
+    ):
+        return ResultadoHabilitacion(False, MOTIVO_ANTECEDENTES)
 
     return ResultadoHabilitacion(True, "Cumple estado documental, estado de empresa y antecedentes vigentes.")
 

@@ -10,6 +10,7 @@ from apps.empresas import services
 from apps.empresas.forms import EmpresaForm
 from apps.empresas.models import EmpresaContratista
 from apps.identidad.context_processors import organizacion_actual
+from apps.identidad.mixins import EnviarAccesoModalView
 
 
 def _organizaciones_del_usuario(usuario):
@@ -31,7 +32,7 @@ class EmpresaListView(LoginRequiredMixin, ListView):
     def get_queryset(self):
         return (
             EmpresaContratista.objects.filter(organizacion_id__in=_organizaciones_del_usuario(self.request.user))
-            .select_related("organizacion")
+            .select_related("organizacion", "usuario")
             .order_by("razon_social")
         )
 
@@ -76,11 +77,11 @@ class EmpresaModalView(LoginRequiredMixin, View):
                 "contacto_email": empresa.contacto_email,
                 "contacto_telefono": empresa.contacto_telefono,
             }
-        return self._modal(request, EmpresaForm(initial=initial), empresa)
+        return self._modal(request, EmpresaForm(initial=initial, creando=empresa is None), empresa)
 
     def post(self, request, pk=None):
         empresa = self._empresa(request, pk)
-        form = EmpresaForm(request.POST)
+        form = EmpresaForm(request.POST, creando=empresa is None)
         if form.is_valid():
             try:
                 if empresa:
@@ -97,3 +98,13 @@ class EmpresaModalView(LoginRequiredMixin, View):
             else:
                 return exito_htmx(request, mensaje=mensaje, url=reverse("empresas:lista"))
         return self._modal(request, form, empresa)
+
+
+class EnviarAccesoEmpresaView(EnviarAccesoModalView):
+    url_lista = "empresas:lista"
+    url_accion = "empresas:enviar_acceso"
+
+    def get_titular(self, request, pk):
+        return get_object_or_404(
+            EmpresaContratista, pk=pk, organizacion_id__in=_organizaciones_del_usuario(request.user)
+        )

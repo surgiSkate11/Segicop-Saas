@@ -41,11 +41,14 @@ class UsuarioAdmin(DjangoUserAdmin):
     """
 
     ordering = ("email",)
-    list_display = ("email", "nombre_completo", "is_active", "is_staff", "mfa_habilitado")
-    search_fields = ("email", "nombre_completo")
+    list_display = ("email", "nombre_usuario", "nombre_completo", "tipo_cuenta", "is_active", "is_staff", "mfa_habilitado")
+    list_filter = ("tipo_cuenta", "is_active", "is_staff", "mfa_habilitado")
+    search_fields = ("email", "nombre_usuario", "nombre_completo")
+    readonly_fields = ("tipo_cuenta", "cuenta_activada_at")
     fieldsets = (
-        (None, {"fields": ("email", "password")}),
+        (None, {"fields": ("email", "nombre_usuario", "password")}),
         ("Información personal", {"fields": ("nombre_completo",)}),
+        ("Cuenta de portal", {"fields": ("tipo_cuenta", "cuenta_activada_at")}),
         (
             "Permisos",
             {

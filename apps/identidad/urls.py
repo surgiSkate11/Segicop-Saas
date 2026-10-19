@@ -2,7 +2,7 @@ from django.contrib.auth import views as auth_views
 from django.urls import path
 
 from apps.identidad.forms import LoginForm
-from apps.identidad.views import PanelView
+from apps.identidad.views import ActivarCuentaView, PanelView
 
 app_name = "identidad"
 
@@ -17,4 +17,5 @@ urlpatterns = [
         name="login",
     ),
     path("logout/", auth_views.LogoutView.as_view(), name="logout"),
+    path("activar/<uidb64>/<token>/", ActivarCuentaView.as_view(), name="activar_cuenta"),
 ]

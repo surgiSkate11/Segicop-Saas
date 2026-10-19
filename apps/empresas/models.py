@@ -2,13 +2,18 @@ from django.db import models
 
 from apps.core.choices import EstadoCumplimiento
 from apps.core.models import OrganizacionScopedModel
+from apps.identidad.models import CuentaAccesoMixin, TipoCuenta
 
 
-class EmpresaContratista(OrganizacionScopedModel):
+class EmpresaContratista(CuentaAccesoMixin, OrganizacionScopedModel):
     """
     RF-010: razón social, RUC, representante, contactos, estado.
     RF-012: el RUC no se repite dentro de la misma organización cliente.
+    Su cuenta de portal entra con el RUC y recibe el acceso en `contacto_email`.
     """
+
+    TIPO_CUENTA = TipoCuenta.EMPRESA
+    ROL_CUENTA = "contratista"
 
     razon_social = models.CharField(max_length=255)
     ruc = models.CharField(max_length=20)
@@ -41,6 +46,18 @@ class EmpresaContratista(OrganizacionScopedModel):
 
     def __str__(self):
         return f"{self.razon_social} ({self.ruc})"
+
+    @property
+    def nombre_usuario_cuenta(self) -> str:
+        return self.ruc
+
+    @property
+    def correo_cuenta(self) -> str:
+        return self.contacto_email
+
+    @property
+    def nombre_cuenta(self) -> str:
+        return self.razon_social
 
 
 class Contrato(OrganizacionScopedModel):

@@ -12,17 +12,32 @@
     </div>
   </div>
 
+  <nav class="sc-pestanas" aria-label="Filtrar por estado" style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px;">
+    {% for pestana in pestanas %}
+      <a class="sc-boton-secundario sc-boton-compacto{% if pestana.activa %} activo{% endif %}"
+         href="{% url 'antecedentes:bandeja' %}{% if pestana.estado %}?estado={{ pestana.estado }}{% endif %}"
+         {% if pestana.activa %}aria-current="page" {% endif %}data-estado="{{ pestana.estado }}" data-conteo="{{ pestana.conteo }}">
+        {{ pestana.etiqueta }} · {{ pestana.conteo }}
+      </a>
+    {% endfor %}
+  </nav>
+
   {% if verificaciones %}
     <div class="sc-tabla-meta"><span>{{ verificaciones|length }} casos pendientes</span><span class="sc-tabla-meta__hint">Revisión humana requerida</span></div>
     <div class="sc-tabla-envoltorio">
       <table class="sc-tabla">
-        <thead><tr><th>Persona</th><th>Estado</th><th>Modo</th><th></th></tr></thead>
+        <thead><tr><th>Persona</th><th>Estado</th><th>Modo</th><th>Siguiente paso</th><th></th></tr></thead>
         <tbody>
           {% for verificacion in verificaciones %}
             <tr>
               <td>{{ verificacion.persona.nombre_completo }}</td>
               <td><span class="sc-estado sc-estado--{{ verificacion.estado|lower }}">{{ verificacion.get_estado_display }}</span></td>
               <td>{{ verificacion.get_modo_conector_display }}</td>
+              <td>
+                {% if verificacion.estado == "FALLIDA" %}
+                  {% if verificacion.reintentar_desde %}Podrás reintentar después de las {{ verificacion.reintentar_desde|time:"H:i" }}{% else %}Ya puedes reintentar{% endif %}
+                {% else %}—{% endif %}
+              </td>
               <td><a class="sc-enlace-control" href="{% url 'antecedentes:detalle' verificacion.pk %}">Abrir caso</a></td>
             </tr>
           {% endfor %}

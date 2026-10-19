@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+{% load static %}
+<html lang="es" class="h-full" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f36f2b">
+  <title>{% block titulo %}Mi portal · SIGECOP{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'css/tailwind.css' %}">
+  <script>
+    (function () {
+      const theme = localStorage.getItem("sigecop-theme") || "light";
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
+  <style>
+    body { font-family: "Nunito", system-ui, sans-serif; }
+  </style>
+</head>
+<body class="sc-app-shell h-full flex antialiased">
+
+  {# Layout propio del portal: solo enlaces del portal, nada de navegación interna #}
+  <nav class="sc-sidebar">
+    <div class="sc-marca">
+      <div class="sc-marca__icono" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 2 3 6v6c0 5.2 3.8 9.4 9 10 5.2-.6 9-4.8 9-10V6z"/><path d="m9 12 2 2 4-4"/></svg>
+      </div>
+      <div class="sc-marca__nombre">SIGECOP</div>
+    </div>
+
+    <div class="sc-nav-seccion">Mi portal</div>
+    <div class="sc-nav">
+      {% block nav_portal %}{% endblock %}
+    </div>
+
+    <div class="sc-sidebar-pie">
+      <div class="sc-sidebar-pie__estado"><span class="sc-punto-activo"></span> Portal de solo lectura</div>
+    </div>
+  </nav>
+
+  <div class="sc-main">
+    <header class="sc-topbar">
+      <div class="sc-topbar-izquierda">
+        <div class="sc-migas">
+        {% block migas %}<strong>Mi portal</strong>{% endblock %}
+        </div>
+      </div>
+      <div class="sc-topbar-derecha">
+        <span class="sc-saludo hidden lg:inline">Hola, {{ request.user.nombre_completo }}</span>
+        <div class="sc-avatar" title="{{ request.user.nombre_completo }}">
+          {{ request.user.nombre_completo|first|upper }}
+        </div>
+        <button type="button" class="sc-icono-boton" id="sc-theme-toggle" aria-label="Activar modo oscuro" aria-pressed="false" title="Cambiar tema">
+          <svg class="sc-icono-sol" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+          <svg class="sc-icono-luna" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20.5 14.7A8.5 8.5 0 0 1 9.3 3.5 8.5 8.5 0 1 0 20.5 14.7Z"/></svg>
+        </button>
+        <form method="post" action="{% url 'identidad:logout' %}" class="inline-flex">
+          {% csrf_token %}
+          <button type="submit" class="sc-icono-boton" title="Cerrar sesión" aria-label="Cerrar sesión">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
+          </button>
+        </form>
+      </div>
+    </header>
+
+    {% include "partials/_mensajes.html" %}
+
+    <div class="sc-cuerpo">
+      <main class="sc-contenido">
+        {% block contenido %}{% endblock %}
+      </main>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const root = document.documentElement;
+      const themeButton = document.getElementById("sc-theme-toggle");
+      const setTheme = function (theme) {
+        root.dataset.theme = theme;
+        localStorage.setItem("sigecop-theme", theme);
+        if (themeButton) {
+          const dark = theme === "dark";
+          themeButton.setAttribute("aria-pressed", String(dark));
+          themeButton.setAttribute("aria-label", dark ? "Activar modo claro" : "Activar modo oscuro");
+        }
+      };
+      setTheme(root.dataset.theme || "light");
+      if (themeButton) themeButton.addEventListener("click", function () {
+        setTheme(root.dataset.theme === "dark" ? "light" : "dark");
+      });
+    })();
+  </script>
+</body>
+</html>

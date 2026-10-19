@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load permisos_antecedentes %}
 
 {% block titulo %}Personas · SIGECOP{% endblock %}
 {% block migas %}Espacio de trabajo <span class="sc-migas__sep">/</span> <strong>Personas</strong>{% endblock %}
@@ -22,7 +23,7 @@
     <div class="sc-tabla-envoltorio">
       <table class="sc-tabla">
         <thead>
-          <tr><th>Nombre</th><th>Documento</th><th>Estado</th><th>Empresa(s)</th><th class="text-right">Acciones</th></tr>
+          <tr><th>Nombre</th><th>Documento</th><th>Estado</th><th>Empresa(s)</th><th>Acceso</th><th class="text-right">Acciones</th></tr>
         </thead>
         <tbody>
           {% for persona in personas %}
@@ -41,16 +42,24 @@
                   <span class="sc-texto-muted">Sin asignar</span>
                 {% endfor %}
               </td>
+              <td>{% include "identidad/_estado_acceso.html" with cuenta=persona.usuario %}</td>
               <td>
                 <div class="sc-tabla-acciones">
+                <button type="button" class="sc-boton-secundario sc-boton-compacto"
+                        hx-get="{% url 'personas:enviar_acceso' persona.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
+                  Enviar acceso
+                </button>
                   <button type="button" class="sc-boton-secundario sc-boton-compacto"
                           hx-get="{% url 'personas:asignar' persona.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
                     Asignar
                   </button>
+                  {% puede_operar_antecedentes persona.organizacion_id as puede_antecedentes %}
+                  {% if puede_antecedentes %}
                   <form method="post" action="{% url 'antecedentes:iniciar' persona.pk %}">
                     {% csrf_token %}
                     <button type="submit" class="sc-boton-secundario sc-boton-compacto">Antecedentes</button>
                   </form>
+                  {% endif %}
                   <button type="button" class="sc-boton-secundario sc-boton-compacto"
                           hx-get="{% url 'accesos:solicitar' persona.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
                     Ingreso
