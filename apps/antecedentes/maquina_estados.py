@@ -36,7 +36,8 @@ for _origen in TRANSICIONES.keys() - TERMINALES:
     TRANSICIONES[_origen].add(E.CANCELADA)
 
 # Estados que esperan una acción humana (bandeja).
-ESTADOS_BANDEJA = (E.AUTORIZACION_PENDIENTE, E.LISTA, E.CAPTCHA_REQUERIDO, E.PDF_RECIBIDO, E.REQUIERE_REVISION, E.AUTENTICIDAD_PENDIENTE, E.FALLIDA)
+# EN_CONSULTA incluido: tras abrir el portal, el caso espera que alguien cargue el certificado.
+ESTADOS_BANDEJA = (E.AUTORIZACION_PENDIENTE, E.LISTA, E.EN_CONSULTA, E.CAPTCHA_REQUERIDO, E.PDF_RECIBIDO, E.REQUIERE_REVISION, E.AUTENTICIDAD_PENDIENTE, E.FALLIDA)
 # Estados desde los que el operador puede cargar el resultado a mano.
 ESTADOS_CARGA_MANUAL = (E.LISTA, E.EN_CONSULTA, E.CAPTCHA_REQUERIDO, E.FALLIDA)
 # Estados en los que el revisor decide.

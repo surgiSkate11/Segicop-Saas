@@ -2,12 +2,13 @@ from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.utils import timezone
 from django.views import View
 from django.views.generic import ListView
 
 from apps.antecedentes import maquina_estados, permisos, services
 from apps.antecedentes.forms import AutorizacionDatosForm, RegistrarResultadoManualForm, ValidarVerificacionForm
-from apps.antecedentes.models import EstadoVerificacion, FinalidadConsulta, VerificacionAntecedentes
+from apps.antecedentes.models import EstadoVerificacion, FinalidadConsulta, ModoConector, VerificacionAntecedentes
 from apps.core.exceptions import DomainError
 from apps.core.modals import exito_htmx, render_modal
 from apps.personas.models import Persona
@@ -71,6 +72,9 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
             "autorizacion": verificacion.autorizacion,
             "espera_autorizacion": verificacion.estado == EstadoVerificacion.AUTORIZACION_PENDIENTE,
             "puede_cargar": verificacion.estado in maquina_estados.ESTADOS_CARGA_MANUAL,
+            "consulta_asistida": verificacion.estado in (EstadoVerificacion.CAPTCHA_REQUERIDO, EstadoVerificacion.EN_CONSULTA)
+            and verificacion.modo_conector == ModoConector.ASISTIDO,
+            "reintentar_desde": self._reintentar_desde(verificacion),
             "ver_resultado": es_revisor,
             "puede_decidir": espera_decision and es_revisor and not cargado_por_mi,
             "bloqueado_cuatro_ojos": espera_decision and es_revisor and cargado_por_mi,
@@ -84,7 +88,13 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
         verificacion = self._verificacion_para_accion(pk)
         accion = request.POST.get("accion")
         try:
-            if accion == "cargar_resultado":
+            if accion == "continuar":
+                # El formulario se envía con target="_blank": el portal se abre en otra pestaña.
+                return redirect(services.continuar_consulta(verificacion=verificacion, actor=request.user))
+            if accion == "reintentar":
+                services.reintentar_consulta(verificacion=verificacion, actor=request.user)
+                messages.success(request, "Se volvió a consultar el portal oficial.")
+            elif accion == "cargar_resultado":
                 self._cargar_resultado(request, verificacion)
             elif accion == "validar":
                 self._validar(request, verificacion)
@@ -93,6 +103,23 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
         except DomainError as error:
             messages.error(request, str(error))
         return redirect(reverse("antecedentes:detalle", args=[verificacion.pk]))
+
+    @staticmethod
+    def _reintentar_desde(verificacion):
+        """Para una fallida: None si ya se puede reintentar; si no, la hora a partir de la cual se podrá."""
+        if verificacion.estado != EstadoVerificacion.FALLIDA:
+            return None
+        ahora = timezone.now()
+        consulta = verificacion.consultas_proveedor.first()
+        candados = [
+            momento
+            for momento in (
+                consulta and consulta.proximo_intento_at,
+                consulta and services.fuente_en_pausa_hasta(consulta.proveedor),
+            )
+            if momento and momento > ahora
+        ]
+        return max(candados) if candados else None
 
     def _cargar_resultado(self, request, verificacion):
         form = RegistrarResultadoManualForm(request.POST)

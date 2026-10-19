@@ -206,6 +206,26 @@ class ConsultaProveedor(BaseModel):
         indexes = [models.Index(fields=["estado", "proximo_intento_at"])]
 
 
+class SaludFuente(BaseModel):
+    """
+    Disyuntor (circuit breaker) por fuente: tras varios fallos seguidos, o si la fuente
+    pide esperar (429), no se la consulta hasta `abierto_hasta`. Visible como salud de la integración.
+    """
+
+    proveedor = models.CharField(max_length=30, choices=ProveedorAntecedentes.choices, unique=True)
+    fallos_consecutivos = models.PositiveIntegerField(default=0)
+    abierto_hasta = models.DateTimeField(null=True, blank=True)
+    ultimo_codigo = models.CharField(max_length=80, blank=True)
+    ultima_evidencia = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        verbose_name = "Salud de fuente"
+        verbose_name_plural = "Salud de fuentes"
+
+    def __str__(self):
+        return self.get_proveedor_display()
+
+
 class IntentoConsulta(BaseModel):
     """Bitácora técnica append-only de cada intento de integración."""
 
