@@ -158,6 +158,10 @@ class VerificacionAntecedentes(OrganizacionScopedModel):
     cargado_por = models.ForeignKey(
         "identidad.Usuario", on_delete=models.PROTECT, null=True, blank=True, related_name="+"
     )
+    # `cargado_por` cambia con cada carga; estos quedan: quien registró el resultado a mano (y, por documento, quien lo subió).
+    resultado_manual_por = models.ForeignKey(
+        "identidad.Usuario", on_delete=models.PROTECT, null=True, blank=True, related_name="+"
+    )
     validado_por = models.ForeignKey(
         "identidad.Usuario", on_delete=models.PROTECT, null=True, blank=True, related_name="+"
     )
@@ -289,6 +293,9 @@ class DocumentoAntecedentes(BaseModel):
             return ResultadoAntecedentes(self.resultado_extraido).label
         return self.resultado_extraido or "No reconocido"
     detalle_validacion = models.TextField(blank=True)
+    subido_por = models.ForeignKey(
+        "identidad.Usuario", on_delete=models.PROTECT, null=True, blank=True, related_name="+"
+    )
     validado_por = models.ForeignKey(
         "identidad.Usuario", on_delete=models.PROTECT, null=True, blank=True, related_name="+"
     )

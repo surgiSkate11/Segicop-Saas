@@ -96,6 +96,16 @@ def serializador_verificacion(es_revisor: bool):
 class CrearVerificacionEntrada(serializers.Serializer):
     personaId = serializers.UUIDField()
     finalidad = serializers.ChoiceField(choices=FinalidadConsulta.choices, default=FinalidadConsulta.HABILITACION_INGRESO)
+    # Debe ser la autorización vigente de la persona para la finalidad (lo comprueba la vista).
+    autorizacionId = serializers.UUIDField(required=False)
+    # Solo se valida: el conector configurado decide cómo se consulta.
+    modoPreferido = serializers.ChoiceField(choices=("OFICIAL_O_ASISTIDO", "ASISTIDO", "MANUAL"), required=False)
+
+    def validate(self, datos):
+        desconocidos = sorted(set(self.initial_data) - set(self.fields))
+        if desconocidos:
+            raise serializers.ValidationError({desconocidos[0]: "Campo no admitido."})
+        return datos
 
 
 class RevisionEntrada(serializers.Serializer):

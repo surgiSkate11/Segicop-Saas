@@ -2,26 +2,32 @@
 Validación y lectura de los PDF de antecedentes (S7: "Aceptar solo PDF válido, dentro del límite y analizado").
 
 No hay antivirus: el "análisis" es estructural (firmas del formato, cifrado, contenido activo) más la
-lectura con pypdf, que no ejecuta nada del documento.
+lectura con pypdf, que no ejecuta nada del documento. Esa lectura corre en un proceso aparte con tiempo
+límite (`pdf_lector.py`): un PDF hostil no puede colgar la petición ni retener un bloqueo de la base.
 """
 
-import io
-import logging
+import json
 import re
+import subprocess
+import sys
+from pathlib import Path
 
-from pypdf import PdfReader
+from django.conf import settings
 
 from apps.core.exceptions import DomainError
 
-logging.getLogger("pypdf").setLevel(logging.ERROR)  # un PDF dañado no debe inundar el registro
-
 ANT_DOCUMENT_INVALID = "ANT_DOCUMENT_INVALID"
 MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
-MAX_PAGINAS_LEIDAS = 10  # el certificado es de una página; más no aporta datos
+MAX_PAGINAS_LEIDAS = 5  # el certificado es de una página; más no aporta datos
+MAX_BYTES_CONTENIDO_PAGINA = 512 * 1024  # contenido ya descomprimido de una página
+PDF_TIMEOUT_POR_DEFECTO = 10  # segundos; ajuste ANTECEDENTES_PDF_TIMEOUT
+_SCRIPT_LECTOR = Path(__file__).with_name("pdf_lector.py")
 _PDF_ACTIVE_CONTENT = re.compile(
-    rb"/(?:JavaScript|JS|Launch|EmbeddedFile|RichMedia|SubmitForm|GoToR|OpenAction)\b",
+    rb"/(?:JavaScript|JS|OpenAction|AA|Launch|EmbeddedFiles?|RichMedia|XFA|SubmitForm|ImportData|GoToR)\b",
     re.IGNORECASE,
 )
+_NOMBRE_CON_ESCAPES = re.compile(rb"/[^\x00\s/<>\[\]()%{}]*#[^\x00\s/<>\[\]()%{}]*")
+_ESCAPE_HEX = re.compile(rb"#([0-9A-Fa-f]{2})")
 _FIRMA_PDF = re.compile(rb"/ByteRange\b|/Type\s*/Sig\b")
 
 
@@ -50,13 +56,20 @@ def validar_entrada(archivo):
     return None
 
 
+def _sin_escapes_en_nombres(contenido: bytes) -> bytes:
+    """`/J#61vaScript` es el nombre `/JavaScript` (escape #xx del formato): se compara ya resuelto."""
+    return _NOMBRE_CON_ESCAPES.sub(
+        lambda nombre: _ESCAPE_HEX.sub(lambda escape: bytes([int(escape.group(1), 16)]), nombre.group(0)), contenido
+    )
+
+
 def validar_estructura(contenido: bytes):
     """Valida un PDF sin interpretarlo ni ejecutar contenido activo."""
     if not contenido.startswith(b"%PDF-") or b"%%EOF" not in contenido[-2048:]:
         return "El archivo no tiene una estructura PDF válida."
     if b"/Encrypt" in contenido[:1_048_576]:
         return "No se aceptan PDF cifrados."
-    if _PDF_ACTIVE_CONTENT.search(contenido):
+    if _PDF_ACTIVE_CONTENT.search(contenido) or _PDF_ACTIVE_CONTENT.search(_sin_escapes_en_nombres(contenido)):
         return "El PDF contiene acciones o archivos incrustados no permitidos."
     return None
 
@@ -76,16 +89,32 @@ def tiene_firma(contenido: bytes) -> bool:
     return bool(_FIRMA_PDF.search(contenido))
 
 
+def _config(nombre: str, por_defecto):
+    return getattr(settings, nombre, por_defecto)
+
+
 def extraer_texto(contenido: bytes):
-    """Texto del PDF con pypdf. Devuelve (texto, error): error es el motivo si no se pudo leer."""
+    """
+    Texto del PDF con pypdf, en un proceso aparte con tiempo límite. Devuelve (texto, error): error es el
+    motivo de rechazo (ilegible, cifrado, contenido activo, demasiadas páginas, contenido desproporcionado
+    o tiempo agotado). Si ni siquiera se puede lanzar el proceso es un fallo nuestro, no del documento.
+    """
+    tiempo = _config("ANTECEDENTES_PDF_TIMEOUT", PDF_TIMEOUT_POR_DEFECTO)
+    comando = [
+        sys.executable,
+        "-I",  # aislado: ni el directorio actual ni variables PYTHON* influyen en lo que se importa
+        str(_SCRIPT_LECTOR),
+        str(MAX_PAGINAS_LEIDAS),
+        str(_config("ANTECEDENTES_PDF_MAX_BYTES_PAGINA", MAX_BYTES_CONTENIDO_PAGINA)),
+    ]
     try:
-        lector = PdfReader(io.BytesIO(contenido), strict=False)
-        if lector.is_encrypted:
-            return "", "No se aceptan PDF cifrados."
-        paginas = lector.pages[:MAX_PAGINAS_LEIDAS]
-        texto = "\n".join((pagina.extract_text() or "") for pagina in paginas)
-    except Exception:  # pypdf lanza muchos tipos distintos ante archivos dañados
+        proceso = subprocess.run(comando, input=contenido, capture_output=True, timeout=tiempo, check=False)
+    except subprocess.TimeoutExpired:  # subprocess ya terminó el proceso hijo
+        return "", f"El PDF tardó más de {tiempo:g} s en analizarse y se rechazó."
+    except OSError:
+        raise DomainError("No se pudo analizar el PDF en este momento; inténtalo de nuevo.")
+    try:
+        resultado = json.loads(proceso.stdout)
+        return resultado["texto"], resultado["error"]
+    except (ValueError, KeyError, TypeError):  # el lector murió (memoria, error interno) sin responder
         return "", "No se pudo leer el PDF: está dañado o incompleto."
-    if not texto.strip():
-        return "", "El PDF no contiene texto legible (¿es una imagen escaneada o está dañado?)."
-    return texto, None

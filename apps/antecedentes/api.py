@@ -26,8 +26,9 @@ class IniciarVerificacionAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, persona_pk):
-        persona = get_object_or_404(Persona, pk=persona_pk)
-        permisos.exigir_operar(request.user, persona.organizacion_id)
+        persona = get_object_or_404(
+            Persona, pk=persona_pk, organizacion_id__in=permisos.organizaciones_operables(request.user)
+        )
         try:
             verificacion, creada = iniciar_verificacion(
                 persona=persona,
@@ -61,8 +62,11 @@ class CargarDocumentoAPIView(APIView):
     parser_classes = [MultiPartParser]
 
     def post(self, request, consulta_pk):
-        consulta = get_object_or_404(ConsultaProveedor.objects.select_related("verificacion__persona"), pk=consulta_pk)
-        permisos.exigir_operar(request.user, consulta.verificacion.organizacion_id)
+        consulta = get_object_or_404(
+            ConsultaProveedor.objects.select_related("verificacion__persona"),
+            pk=consulta_pk,
+            verificacion__organizacion_id__in=permisos.organizaciones_operables(request.user),
+        )
         archivo = request.FILES.get("archivo")
         if not archivo:
             return Response({"detail": "El campo archivo es obligatorio."}, status=status.HTTP_400_BAD_REQUEST)
@@ -91,6 +95,10 @@ MAX_CLAVE_IDEMPOTENCIA = 64  # largo de VerificacionAntecedentes.clave_idempoten
 
 class SolicitudInvalida(DomainError):
     codigo = CODIGO_SOLICITUD_INVALIDA
+
+
+class AutorizacionRequerida(DomainError):
+    codigo = "ANT_AUTHORIZATION_REQUIRED"
 
 
 def enmascarar_documento(numero: str) -> str:
@@ -174,6 +182,13 @@ class CrearVerificacionAPIView(VerificacionesAPIView):
         persona = get_object_or_404(
             Persona, pk=datos["personaId"], organizacion_id__in=permisos.organizaciones_operables(request.user)
         )
+        autorizacion_id = datos.get("autorizacionId")
+        if autorizacion_id is not None:
+            vigente = services.autorizacion_vigente(persona, datos["finalidad"])
+            if vigente is None or vigente.pk != autorizacion_id:
+                raise AutorizacionRequerida(
+                    "La autorización indicada no es la vigente de esta persona para esa finalidad."
+                )
         verificacion, creada = iniciar_verificacion(
             persona=persona, actor=request.user, finalidad=datos["finalidad"], clave_idempotencia=clave
         )

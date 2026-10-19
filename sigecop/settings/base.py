@@ -151,6 +151,8 @@ ANTECEDENTES_SONDEO_TIMEOUT = 5  # segundos por intento
 ANTECEDENTES_ESPERAS_REINTENTO = (2, 5)  # tiempo agotado o 5xx: máximo dos reintentos, espera incremental
 ANTECEDENTES_CIRCUITO_UMBRAL = 3  # fallos seguidos que pausan la fuente
 ANTECEDENTES_CIRCUITO_PAUSA = 600  # segundos de pausa; es la hora que se indica para reintentar
+ANTECEDENTES_PDF_TIMEOUT = 10  # segundos para analizar un PDF en un proceso aparte; si se pasa, va a cuarentena
+ANTECEDENTES_PDF_MAX_BYTES_PAGINA = 512 * 1024  # contenido decodificado máximo por página
 
 OTEL_ENABLED = env.bool("OTEL_ENABLED", default=False)
 OTEL_SERVICE_NAME = env("OTEL_SERVICE_NAME", default="sigecop")
