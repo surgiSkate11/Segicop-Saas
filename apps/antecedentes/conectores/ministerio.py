@@ -8,6 +8,7 @@ intentar resolver desafíos; la consulta real la hace una persona en su navegado
 
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from apps.antecedentes.conectores.base import ClaseRespuesta, ResultadoSondeo
@@ -25,6 +26,9 @@ def _segundos(valor) -> int | None:
 
 
 def sondear_portal(url: str = PORTAL_URL, timeout: float = 5) -> ResultadoSondeo:
+    # Nunca file://, http:// ni esquemas propios: urlopen los abriría igual (bandit B310, ver nosec abajo).
+    if urllib.parse.urlsplit(url).scheme != "https":
+        raise ValueError("Solo se consultan portales por https.")
     peticion = urllib.request.Request(url, method="GET", headers={"User-Agent": USER_AGENT})
     inicio = time.monotonic()
 
@@ -32,7 +36,7 @@ def sondear_portal(url: str = PORTAL_URL, timeout: float = 5) -> ResultadoSondeo
         return int((time.monotonic() - inicio) * 1000)
 
     try:
-        with urllib.request.urlopen(peticion, timeout=timeout) as respuesta:
+        with urllib.request.urlopen(peticion, timeout=timeout) as respuesta:  # nosec B310
             codigo = respuesta.status
     except urllib.error.HTTPError as error:
         codigo = error.code

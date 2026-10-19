@@ -1881,6 +1881,14 @@ class ConsultaAsistidaTests(BaseAntecedentesTests):
 
 
 class SondeoPortalTests(TestCase):
+    def test_solo_consulta_urls_https(self):
+        for url in ("file:///etc/passwd", "http://certificados.ministeriodelinterior.gob.ec/", "ftp://x/", ""):
+            with self.subTest(url=url):
+                with mock.patch("apps.antecedentes.conectores.ministerio.urllib.request.urlopen") as urlopen:
+                    with self.assertRaisesMessage(ValueError, "Solo se consultan portales por https."):
+                        sondear_portal(url, 5)
+                urlopen.assert_not_called()
+
     """Clasificación de la respuesta del portal: una sola petición, sin datos personales ni lectura del cuerpo."""
 
     def sondear(self, efecto):
