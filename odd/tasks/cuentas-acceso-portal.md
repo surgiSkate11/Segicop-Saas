@@ -20,14 +20,16 @@ Branch: `feat/cuentas-acceso-portal`. Read until `## Log` before working on any 
 
 ## Tasks
 
-- T1 — S1-S3, S7, S8, S10 — identidad: `nombre_usuario`/`tipo_cuenta`, `CuentaAccesoMixin`, provisioning service, activation token + view, login by username, tests — inline — commit: pending
-- T2 — S1, S7, S9, S10, S12 — empresas + personas: link accounts, provision on create, sync username on edit, "Enviar acceso" modal mixin, tests — inline — commit: pending
-- T3 — S4-S6, S10 — portal app: middleware default deny, company and person views/templates, tests — inline — commit: pending
-- T4 — S11, S10 — core: SMTP sender configuration editable from admin, tests — inline — commit: pending
-- T5 — all — verification, constitution update — inline — commit: pending
+- T1 — S1-S3, S7, S8, S10 — identidad: `nombre_usuario`/`tipo_cuenta`, `CuentaAccesoMixin`, provisioning service, activation token + view, login by username, tests — inline — done, commit: ef7f4a1
+- T2 — S1, S7, S9, S10, S12 — empresas + personas: link accounts, provision on create, sync username on edit, "Enviar acceso" modal mixin, tests — inline — done, commit: ece0d6a
+- T3 — S4-S6, S10 — portal app: middleware default deny, company and person views/templates, tests — worker (context backstop) — done, commit: bba1887
+- T4 — S11, S10 — core: SMTP sender configuration editable from admin, tests — inline — done, commit: cdba9fa
+- T5 — all — verification, constitution update — gentle-ai-verify + inline fixes — done, commit: see L5
 
 ## Log
 
 - L1 — User request (verbatim): "perfecto entiendes que el proyecto es de contratos, vamos a ir desarrollando modulos paso a paso, primero terminemos el modulo de usuarios y empresa, quiero q al crear una empresa o un usuario se le envíe por correo el usuario y contraseña, para la empresa es el ruc y una cntraseña generada aleatoriamente y para la persona la cedula es el usuario y la contraseña también la generamos aleatoriamente, obviamente para ambos casos al intentar iniciar sesion por primera vez deberan cambiarla, dime q verán ambos cuando inicien sesion, al tener flujos parecidos pueds encapsular y reutilizar funcionalidades como mixins por ejemplo, armalo perfectamente, y en cada modulo haz las pruebas con test.py para cada app del proyecto"
 - L2 — User decisions: Q1 company portal "Portal de solo lectura (Recomendado)"; Q2 person "Mi perfil + espacio para el pase QR"; Q3 "(custom) al referirte al correo de contacto es el que envía los correos?, eso lo configuraremos luego desde el panel administrativo, agregalo como tarea para el final"; Q4 security "Enlace de activación".
 - L3 — Decisions: Q3 clarified as recipient (`contacto_email`) vs sender (SMTP, T4). Required in UI forms on create; service layer still accepts no email (existing callers) and then creates no account, staff sends access later (S9). Baseline suite before work: 36 tests OK.
+- L4 — T1+T2 done: full suite 88 tests OK. Delivery slices: PR slice 1 = ef7f4a1 (identidad, ~900 lines) + ece0d6a (empresas/personas, ~650 lines); oversized for one review, recommend chained PRs per commit. T3 onward is slice 2.
+- L5 — Independent verify: S1/S2/S6/S10/S12 pass; found D1 (high: shared account email takeover via enviar_acceso), D2 (shared titular edit blocked), D3 (document shaped like an email shadows staff login). Fixed with regression tests; full suite 124 OK, ruff clean. Constitution updated locally (doc/ is gitignored). Advisories left open: SMTP password plaintext in DB; email-uniqueness race -> IntegrityError 500; second active SMTP config -> IntegrityError instead of form error.

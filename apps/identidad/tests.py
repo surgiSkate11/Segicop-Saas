@@ -134,6 +134,11 @@ class LoginPorNombreUsuarioTests(TestCase):
         self.assertFalse(pendiente.has_usable_password())
         self.assertIsNone(authenticate(username="0912345678", password=""))
 
+    def test_documento_con_forma_de_correo_no_bloquea_al_personal_interno(self):
+        crear_cuenta_portal(nombre_usuario="interno@example.com", email="otra@example.com")
+
+        self.assertEqual(authenticate(username="interno@example.com", password="UnaClaveSegura123!"), self.interno)
+
     def test_formulario_de_login_acepta_ruc(self):
         formulario = LoginForm(data={"username": "1790000000001", "password": CLAVE_NUEVA})
 

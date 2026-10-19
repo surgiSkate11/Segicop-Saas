@@ -53,4 +53,9 @@ class EnviarAccesoModalView(LoginRequiredMixin, View):
             usuario = services.enviar_acceso(titular=titular, actor=request.user)
         except DomainError as error:
             return self._modal(request, titular, error=str(error))
-        return exito_htmx(request, mensaje=f"Enlace de acceso enviado a {usuario.email}.", url=reverse(self.url_lista))
+        if usuario.email.lower() == (titular.correo_cuenta or "").strip().lower():
+            mensaje = f"Enlace de acceso enviado a {usuario.email}."
+        else:
+            # Cuenta compartida: su correo pertenece a otra organización y no se revela.
+            mensaje = "Enlace de acceso enviado al correo registrado de la cuenta."
+        return exito_htmx(request, mensaje=mensaje, url=reverse(self.url_lista))
