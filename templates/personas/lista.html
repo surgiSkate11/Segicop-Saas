@@ -22,7 +22,7 @@
     <div class="sc-tabla-envoltorio">
       <table class="sc-tabla">
         <thead>
-          <tr><th>Nombre</th><th>Documento</th><th>Estado</th><th>Empresa(s)</th><th class="text-right">Acciones</th></tr>
+          <tr><th>Nombre</th><th>Documento</th><th>Estado</th><th>Empresa(s)</th><th>Acceso</th><th class="text-right">Acciones</th></tr>
         </thead>
         <tbody>
           {% for persona in personas %}
@@ -41,8 +41,13 @@
                   <span class="sc-texto-muted">Sin asignar</span>
                 {% endfor %}
               </td>
+              <td>{% include "identidad/_estado_acceso.html" with cuenta=persona.usuario %}</td>
               <td>
                 <div class="sc-tabla-acciones">
+                <button type="button" class="sc-boton-secundario sc-boton-compacto"
+                        hx-get="{% url 'personas:enviar_acceso' persona.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
+                  Enviar acceso
+                </button>
                   <button type="button" class="sc-boton-secundario sc-boton-compacto"
                           hx-get="{% url 'personas:asignar' persona.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
                     Asignar

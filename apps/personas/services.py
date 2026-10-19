@@ -3,6 +3,7 @@ from django.db import transaction
 from apps.core.choices import EstadoCumplimiento
 from apps.core.events import emitir_evento
 from apps.core.exceptions import DomainError
+from apps.identidad.services import provisionar_cuenta, sincronizar_cuenta
 from apps.personas.models import Asignacion, Persona
 
 
@@ -10,7 +11,10 @@ from apps.personas.models import Asignacion, Persona
 def registrar_persona(
     *, organizacion, tipo_documento, numero_documento, nombres, apellidos, actor, **datos_opcionales
 ) -> Persona:
-    """RF-022: detecta coincidencia por documento antes del IntegrityError."""
+    """
+    RF-022: detecta coincidencia por documento antes del IntegrityError.
+    S1: con correo de contacto, crea su cuenta de portal (usuario = documento).
+    """
     coincidencia = Persona.objects.filter(
         organizacion=organizacion, tipo_documento=tipo_documento, numero_documento=numero_documento
     ).first()
@@ -33,6 +37,8 @@ def registrar_persona(
         organizacion=organizacion,
         motivo=f"Alta de {persona.nombre_completo} ({numero_documento}).",
     )
+    if persona.contacto_email:
+        provisionar_cuenta(titular=persona, actor=actor)
     return persona
 
 
@@ -108,4 +114,5 @@ def actualizar_persona(
         organizacion=persona.organizacion,
         motivo=f"Datos de {persona.nombre_completo} actualizados.",
     )
+    sincronizar_cuenta(titular=persona, actor=actor)
     return persona

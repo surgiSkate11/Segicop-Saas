@@ -27,6 +27,7 @@
             <th>RUC</th>
             <th>Estado</th>
             <th>Contratos</th>
+            <th>Acceso</th>
             <th class="text-right">Acciones</th>
           </tr>
         </thead>
@@ -43,8 +44,13 @@
                 <span class="sc-estado sc-estado--{{ empresa.estado|lower }}">{{ empresa.get_estado_display }}</span>
               </td>
               <td><span class="sc-contador">{{ empresa.contratos.count }}</span></td>
+              <td>{% include "identidad/_estado_acceso.html" with cuenta=empresa.usuario %}</td>
               <td class="text-right">
                 <div class="sc-tabla-acciones">
+                <button type="button" class="sc-boton-secundario sc-boton-compacto"
+                        hx-get="{% url 'empresas:enviar_acceso' empresa.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
+                  Enviar acceso
+                </button>
                 <button type="button" class="sc-boton-secundario sc-boton-compacto"
                         hx-get="{% url 'trabajos:crear' empresa.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
                   <span aria-hidden="true">+</span> Trabajo
