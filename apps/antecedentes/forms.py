@@ -56,4 +56,11 @@ class AutorizacionDatosForm(EstiloFormMixin, forms.Form):
 
 
 class RevocarAutorizacionForm(EstiloFormMixin, forms.Form):
-    motivo = forms.CharField(label="Motivo de la revocación", widget=forms.Textarea(attrs={"rows": 3}))
+    motivo = forms.CharField(
+        label="Motivo de la revocación",
+        help_text=(
+            "Se anulan las verificaciones en curso y una ya validada deja de habilitar el ingreso; "
+            "el historial se conserva."
+        ),
+        widget=forms.Textarea(attrs={"rows": 3}),
+    )
