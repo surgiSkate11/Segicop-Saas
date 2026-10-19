@@ -1,4 +1,6 @@
 {% extends "base.html" %}
+{% load static %}
+{% block extra_head %}<script src="{% static 'antecedentes/carga.js' %}" defer></script>{% endblock %}
 {% block titulo %}Antecedentes de {{ verificacion.persona.nombre_completo }} · SIGECOP{% endblock %}
 {% block nav_antecedentes %}activo{% endblock %}
 {% block migas %}
@@ -35,6 +37,12 @@
       · otorgada el {{ autorizacion.otorgada_en|date:"d/m/Y" }}
       {% if autorizacion.referencia_evidencia %}· evidencia: {{ autorizacion.referencia_evidencia }}{% endif %}
       {% if autorizacion.revocada_en %}· <strong>revocada el {{ autorizacion.revocada_en|date:"d/m/Y" }}: {{ autorizacion.motivo_revocacion }}</strong>{% endif %}
+      {% if puede_revocar %}
+        · <button type="button" class="sc-enlace-control"
+                  hx-get="{% url 'antecedentes:revocar-autorizacion' verificacion.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
+          Revocar autorización
+        </button>
+      {% endif %}
     </p>
   {% endif %}
 
@@ -79,6 +87,18 @@
   {% endif %}
 
   {% if puede_cargar %}
+    <form method="post" enctype="multipart/form-data" style="margin-bottom: 24px;">
+      {% csrf_token %}
+      <input type="hidden" name="accion" value="cargar_certificado">
+      <label class="sc-zona-carga" data-zona-carga
+             style="display:block; border:2px dashed var(--borde, #ccc); border-radius:12px; padding:24px; text-align:center; cursor:pointer;">
+        <p class="sc-banner__titulo">Cargar el certificado en PDF</p>
+        <p class="sc-banner__detalle">Arrastra aquí el PDF descargado del portal o haz clic para elegirlo (máximo 10 MB).</p>
+        <input type="file" name="archivo" accept="application/pdf">
+      </label>
+      <noscript><button type="submit" class="sc-boton-primario" style="margin-top:8px;">Subir certificado</button></noscript>
+    </form>
+
     <div class="sc-banner">
       <div class="sc-banner__icono">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 4 7v6c0 5 4 7.5 8 8 4-.5 8-3 8-8V7z"/></svg>
@@ -103,6 +123,28 @@
       <div class="sc-campo" style="margin:12px 0;"><label>Comentario</label>{{ form_resultado.comentario }}</div>
       <button type="submit" class="sc-boton-primario">Guardar resultado</button>
     </form>
+  {% endif %}
+
+  {% if documento %}
+    <p class="sc-etiqueta-seccion">Certificado cargado</p>
+    <div class="sc-tabla-envoltorio" style="margin-bottom: 24px;">
+      <table class="sc-tabla">
+        <tbody>
+          <tr><th>Número de certificado</th><td>{{ documento.numero_certificado|default:"—" }}</td></tr>
+          <tr><th>Fecha de emisión</th><td>{{ documento.fecha_emision|date:"d/m/Y"|default:"—" }}</td></tr>
+          <tr><th>Válido hasta</th><td>{{ documento.vigente_hasta_extraida|date:"d/m/Y"|default:"—" }}</td></tr>
+          <tr><th>Identificación</th><td>{{ documento.identificacion_extraida|default:"—" }}</td></tr>
+          <tr><th>Apellidos y nombres</th><td>{{ documento.nombre_extraido|default:"—" }}</td></tr>
+          <tr><th>Registra antecedentes</th><td>{{ documento.get_resultado_extraido_display }}</td></tr>
+          <tr><th>Firma detectada</th><td>{% if documento.firma_detectada %}Sí (sin validación criptográfica){% else %}No{% endif %}</td></tr>
+          <tr><th>Validación</th><td>{{ documento.estado_validacion }}{% if documento.codigo_error %} · {{ documento.codigo_error }}{% endif %}</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-bottom: 24px;">
+      <a class="sc-enlace-control" href="{% url 'antecedentes:descargar-documento' documento.pk %}">Descargar PDF original</a>
+      <span class="sc-texto-muted">· SHA-256 {{ documento.sha256|truncatechars:20 }} · la descarga queda auditada</span>
+    </p>
   {% endif %}
 
   {% if puede_decidir or bloqueado_cuatro_ojos %}

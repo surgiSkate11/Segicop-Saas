@@ -1,6 +1,12 @@
 from rest_framework import serializers
 
-from apps.antecedentes.models import ConsultaProveedor, DocumentoAntecedentes, VerificacionAntecedentes
+from apps.antecedentes.models import (
+    ConsultaProveedor,
+    DocumentoAntecedentes,
+    EstadoVerificacion,
+    FinalidadConsulta,
+    VerificacionAntecedentes,
+)
 
 # ANT-011: el operador nunca recibe el resultado ni lo extraído del certificado; solo el revisor.
 
@@ -82,3 +88,19 @@ class VerificacionRevisorSerializer(VerificacionOperadorSerializer):
 
 def serializador_verificacion(es_revisor: bool):
     return VerificacionRevisorSerializer if es_revisor else VerificacionOperadorSerializer
+
+
+# --- Entradas de la API /api/v1/verificaciones-antecedentes (S10) -------------------------------------------
+
+
+class CrearVerificacionEntrada(serializers.Serializer):
+    personaId = serializers.UUIDField()
+    finalidad = serializers.ChoiceField(choices=FinalidadConsulta.choices, default=FinalidadConsulta.HABILITACION_INGRESO)
+
+
+class RevisionEntrada(serializers.Serializer):
+    decision = serializers.ChoiceField(
+        choices=[EstadoVerificacion.VALIDADA, EstadoVerificacion.LISTA, EstadoVerificacion.CANCELADA]
+    )
+    comentario = serializers.CharField(required=False, allow_blank=True, default="")
+    vigenteHasta = serializers.DateField(required=False, allow_null=True, default=None)

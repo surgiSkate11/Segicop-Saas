@@ -464,19 +464,30 @@ def ejecutar_consulta_asistida(*, consulta: ConsultaProveedor, actor=None) -> bo
         consulta.refresh_from_db()
 
 
-def reintentar_consulta(*, verificacion: VerificacionAntecedentes, actor) -> VerificacionAntecedentes:
-    """La persona operadora pide un nuevo intento de una verificación fallida, respetando la hora indicada."""
+def reintentar_desde(verificacion: VerificacionAntecedentes):
+    """Para una fallida: None si ya se puede reintentar; si no, el momento a partir del cual se podrá."""
     if verificacion.estado != EstadoVerificacion.FALLIDA:
-        raise DomainError("Solo se puede reintentar una verificación fallida.")
-    consulta = verificacion.consultas_proveedor.get(proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR)
+        return None
+    consulta = verificacion.consultas_proveedor.filter(proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR).first()
+    if consulta is None:
+        return None
     ahora = timezone.now()
     candados = [
         momento
         for momento in (consulta.proximo_intento_at, fuente_en_pausa_hasta(consulta.proveedor))
         if momento and momento > ahora
     ]
-    if candados:
-        raise DomainError(f"Podrás reintentar después de las {_hora(max(candados))}; mientras tanto puedes cargar el certificado manualmente.")
+    return max(candados) if candados else None
+
+
+def reintentar_consulta(*, verificacion: VerificacionAntecedentes, actor) -> VerificacionAntecedentes:
+    """La persona operadora pide un nuevo intento de una verificación fallida, respetando la hora indicada."""
+    if verificacion.estado != EstadoVerificacion.FALLIDA:
+        raise DomainError("Solo se puede reintentar una verificación fallida.")
+    consulta = verificacion.consultas_proveedor.get(proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR)
+    espera = reintentar_desde(verificacion)
+    if espera:
+        raise DomainError(f"Podrás reintentar después de las {_hora(espera)}; mientras tanto puedes cargar el certificado manualmente.")
 
     try:
         with transaction.atomic():
@@ -799,6 +810,15 @@ def validar_verificacion(*, verificacion, revisor, decision: str, comentario="",
         campos["comentario"] = comentario
     if decision == EstadoVerificacion.VALIDADA:
         campos["vigente_hasta"] = vigente_hasta
+
+    if verificacion.estado == EstadoVerificacion.AUTENTICIDAD_PENDIENTE and decision == EstadoVerificacion.LISTA:
+        # El diagrama solo permite devolver desde REQUIERE_REVISION: se pasa por ahí y queda en la bitácora.
+        maquina_estados.transicionar(
+            verificacion=verificacion,
+            nuevo_estado=EstadoVerificacion.REQUIERE_REVISION,
+            actor=revisor,
+            nota_bitacora="El revisor devuelve el caso para una nueva carga.",
+        )
 
     maquina_estados.transicionar(
         verificacion=verificacion,
