@@ -1,9 +1,13 @@
 """
 Lectura del texto del certificado de antecedentes penales del Ministerio del Interior (S7).
 
-Módulo puro, sin Django: recibe el texto ya extraído del PDF. Todavía no hay un PDF real de muestra,
-así que es tolerante (tildes, mayúsculas, saltos de línea, con o sin dos puntos) y, ante lo que no
-reconoce, devuelve vacío en lugar de inventar: el caso pasa entonces a revisión humana.
+Módulo puro, sin Django: recibe el texto ya extraído del PDF. Admite dos diseños:
+
+- El certificado real (TCPDF): los rótulos están en la imagen de fondo y el texto trae solo los valores,
+  en orden fijo antes de "Válido hasta". Se leen por posición y cada valor debe tener su forma esperada.
+- Texto con rótulos ("Fecha de Emisión: ..."), tolerante a tildes, mayúsculas y saltos de línea.
+
+Ante lo que no reconoce devuelve vacío en lugar de inventar: el caso pasa entonces a revisión humana.
 """
 
 import re
@@ -72,7 +76,35 @@ def _resultado(valor: str) -> str | None:
     return coincidencia.group(1).upper() if coincidencia else None
 
 
+# Forma de cada valor del diseño oficial, en orden, sobre texto sin tildes y en minúsculas.
+_POSICIONES_OFICIALES = (
+    ("fecha_emision", re.compile(r"\d{1,2} de [a-z]+ del? \d{4}")),
+    ("numero_certificado", re.compile(r"(?=[a-z0-9-]*\d)[a-z0-9-]{8,30}")),
+    ("tipo_documento", re.compile(r"(?:cedula|pasaporte|documento|carne|refugiado)[a-z ]*")),
+    ("identificacion", re.compile(r"[a-z0-9]{5,20}")),
+    ("nombres", re.compile(r"[a-zñ]+(?: [a-zñ]+)+")),
+    ("registra", re.compile(r"si|no")),
+)
+
+
+def _por_posicion(texto: str) -> dict[str, str]:
+    """Valores del certificado oficial: las seis líneas antes de "Válido hasta", todas con su forma o ninguna."""
+    lineas = [re.sub(r"\s+", " ", linea).strip() for linea in (texto or "").splitlines()]
+    lineas = [linea for linea in lineas if linea]
+    fin = next((i for i, linea in enumerate(lineas) if _sin_tildes(linea).startswith("valido hasta")), None)
+    if fin is None or fin < len(_POSICIONES_OFICIALES):
+        return {}
+    candidatas = lineas[fin - len(_POSICIONES_OFICIALES):fin]
+    valores = {}
+    for (clave, forma), linea in zip(_POSICIONES_OFICIALES, candidatas):
+        if not forma.fullmatch(_sin_tildes(linea)):
+            return {}
+        valores[clave] = linea
+    return valores
+
+
 def analizar_texto(texto: str) -> CertificadoExtraido:
+    posicionales = _por_posicion(texto)
     plano = re.sub(r"\s+", " ", texto or "").strip()
     normalizado = _sin_tildes(plano)
     marcas = list(_PATRON_ETIQUETAS.finditer(normalizado))
@@ -81,6 +113,8 @@ def analizar_texto(texto: str) -> CertificadoExtraido:
         clave = marca.lastgroup
         fin = marcas[indice + 1].start() if indice + 1 < len(marcas) else len(plano)
         valores.setdefault(clave, plano[marca.end():fin].strip(" :.-\t"))
+    for clave, valor in posicionales.items():
+        valores.setdefault(clave, valor)  # un rótulo explícito tiene prioridad
 
     return CertificadoExtraido(
         fecha_emision=_fecha(valores.get("fecha_emision", "")),

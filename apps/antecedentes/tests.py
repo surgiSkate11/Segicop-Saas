@@ -2036,8 +2036,73 @@ def crear_pdf_con_flujo_de_objetos(clave, lineas=()):
     return bytes(salida)
 
 
+def lineas_certificado_oficial(
+    identificacion="1111111111", nombres="EVALUADA PERSONA", resultado="NO", numero="202600101234567P"
+):
+    """
+    Capa de texto del certificado real del Ministerio (generado con TCPDF): los rótulos son parte de la
+    imagen de fondo, así que el texto trae solo los valores, en orden fijo. Datos sintéticos.
+    """
+    return [
+        "19 de OCTUBRE del 2026",
+        numero,
+        "CEDULA DE IDENTIDAD",
+        identificacion,
+        nombres,
+        resultado,
+        "Válido hasta el 17 de ENERO del 2027",
+        "Crnl. Em. NOMBRE DEL DIRECTOR",
+        "DIRECTOR NACIONAL DE INVESTIGACIÓN DE POLICÍA JUDICIAL",
+        "MINISTERIO DEL INTERIOR - POLICÍA NACIONAL",
+        "Powered by TCPDF (www.tcpdf.org)",
+    ]
+
+
+class CertificadoOficialTests(SimpleTestCase):
+    """S7 con el diseño del certificado real (doc/cert_ant_penales.pdf, no versionado por tener datos personales)."""
+
+    def test_lee_los_valores_por_posicion_cuando_el_texto_no_trae_rotulos(self):
+        datos = certificado.analizar_texto("\n".join(lineas_certificado_oficial()))
+
+        self.assertEqual(
+            datos,
+            certificado.CertificadoExtraido(
+                fecha_emision=date(2026, 10, 19),
+                numero_certificado="202600101234567P",
+                tipo_documento="CEDULA DE IDENTIDAD",
+                identificacion="1111111111",
+                nombres="EVALUADA PERSONA",
+                resultado="NO",
+                vigente_hasta=date(2027, 1, 17),
+            ),
+        )
+
+    def test_reconoce_el_resultado_si(self):
+        self.assertEqual(certificado.analizar_texto("\n".join(lineas_certificado_oficial(resultado="SI"))).resultado, "SI")
+
+    def test_si_un_valor_no_tiene_la_forma_esperada_no_se_adivina_nada(self):
+        for campo, valor in {
+            "resultado": "QUIZÁS",
+            "identificacion": "12-34 56",
+            "numero": "pendiente",
+            "nombres": "12345",
+        }.items():
+            with self.subTest(campo=campo):
+                datos = certificado.analizar_texto("\n".join(lineas_certificado_oficial(**{campo: valor})))
+                self.assertEqual((datos.identificacion, datos.nombres, datos.resultado), ("", "", None))
+                self.assertEqual(datos.vigente_hasta, date(2027, 1, 17))
+
+    def test_faltando_una_linea_no_se_desplazan_los_valores(self):
+        lineas = lineas_certificado_oficial()
+        del lineas[2]  # sin tipo de documento: la identificación quedaría en su lugar
+
+        datos = certificado.analizar_texto("\n".join(lineas))
+
+        self.assertEqual((datos.identificacion, datos.resultado), ("", None))
+
+
 class CertificadoParserTests(SimpleTestCase):
-    """Parser puro del diseño del certificado (S7); no hay PDF real de muestra, por eso es tolerante."""
+    """Parser puro del diseño con rótulos en el texto (tolerante)."""
 
     def test_extrae_los_campos_del_diseno_del_certificado(self):
         datos = certificado.analizar_texto("\n".join(lineas_certificado()))
@@ -2501,6 +2566,31 @@ class CargaPdfAcotadaTests(PipelineCertificadoBase):
             with self.subTest(caso=nombre):
                 self.assertEqual(self.cargar_a_cuarentena(contenido), self.ACTIVO)
 
+    def test_open_action_que_solo_abre_una_pagina_se_acepta_como_en_el_certificado_oficial(self):
+        # El certificado real del Ministerio trae `/OpenAction [6 0 R /FitH null]`: abrir en la página, ajustada.
+        for nombre, extra in {
+            "destino directo": b"/OpenAction [3 0 R /FitH null]",
+            "acción GoTo": b"/OpenAction << /S /GoTo /D [3 0 R /Fit] >>",
+            "destino escapado": b"/Open#41ction [3 0 R /XYZ 0 842 0]",
+        }.items():
+            with self.subTest(caso=nombre):
+                verificacion, _ = self.verificacion_lista()
+                self.cargar(verificacion, crear_pdf(lineas_certificado(), catalogo_extra=extra))
+                verificacion.refresh_from_db()
+                self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+
+    def test_open_action_que_ejecuta_algo_sigue_rechazada(self):
+        for nombre, extra in {
+            "Launch": b"/OpenAction << /S /Launch /F (calc.exe) >>",
+            "JavaScript": b"/OpenAction << /S /JavaScript /JS (app.alert(1)) >>",
+            "URI": b"/OpenAction << /S /URI /URI (http://example.com) >>",
+            "referencia a un diccionario": b"/OpenAction 2 0 R",
+        }.items():
+            with self.subTest(caso=nombre):
+                self.assertEqual(
+                    self.cargar_a_cuarentena(crear_pdf(lineas_certificado(), catalogo_extra=extra)), self.ACTIVO
+                )
+
     def test_validar_pdf_seguro_normaliza_los_escapes_de_nombres(self):
         archivo = SimpleUploadedFile(
             "documento.pdf", b"%PDF-1.7\n1 0 obj << /J#61vaScript 2 0 R >> endobj\n%%EOF"
@@ -2530,6 +2620,32 @@ class CargaPdfAcotadaTests(PipelineCertificadoBase):
 
         verificacion.refresh_from_db()
         self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+
+    def test_un_certificado_con_el_formato_oficial_llega_a_autenticidad_pendiente(self):
+        verificacion, _ = self.verificacion_lista()
+        contenido = crear_pdf(
+            lineas_certificado_oficial(), firma=True, catalogo_extra=b"/OpenAction [3 0 R /FitH null]"
+        )
+
+        documento, _ = self.cargar(verificacion, contenido)
+
+        verificacion.refresh_from_db()
+        documento.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+        self.assertEqual(
+            (verificacion.resultado, verificacion.numero_certificado, documento.vigente_hasta_extraida),
+            ("NO", "202600101234567P", date(2027, 1, 17)),
+        )
+        self.assertTrue(documento.firma_detectada)
+
+    def test_el_formato_oficial_con_otra_cedula_va_a_revision_por_identidad(self):
+        verificacion, _ = self.verificacion_lista()
+
+        self.cargar(verificacion, crear_pdf(lineas_certificado_oficial(identificacion="0999999999"), firma=True))
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.REQUIERE_REVISION)
+        self.assertEqual(DocumentoAntecedentes.objects.get().codigo_error, "ANT_IDENTITY_MISMATCH")
 
 
 class CargarCertificadoAPITests(PipelineCertificadoBase):
