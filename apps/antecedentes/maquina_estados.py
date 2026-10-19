@@ -1,37 +1,58 @@
 from apps.antecedentes.models import EjecucionConector, EstadoVerificacion
 from apps.core.events import emitir_evento
-from apps.core.exceptions import TransicionEstadoInvalida
+from apps.core.exceptions import DomainError, TransicionEstadoInvalida
 
 E = EstadoVerificacion
 
+_TERMINALES = {E.VALIDADA, E.VENCIDA, E.CANCELADA}
+
 TRANSICIONES: dict[str, set[str]] = {
-    E.SOLICITADA: {E.CONTINGENCIA_MANUAL, E.EN_COLA, E.FALLIDA_TECNICA},
-    E.EN_COLA: {E.EN_PROCESO},
-    E.EN_PROCESO: {
-        E.REINTENTANDO,
-        E.FALLIDA_TECNICA,
-        E.RESULTADO_SI_OBTENIDO,
-        E.RESULTADO_NO_OBTENIDO,
-        E.RESULTADO_NO_DETERMINADO,
-    },
-    E.REINTENTANDO: {E.EN_PROCESO, E.FALLIDA_TECNICA},
-    E.FALLIDA_TECNICA: {E.CONTINGENCIA_MANUAL},
-    E.RESULTADO_SI_OBTENIDO: {E.EN_REVISION_MANUAL},
-    E.RESULTADO_NO_OBTENIDO: {E.EN_REVISION_MANUAL},
-    E.RESULTADO_NO_DETERMINADO: {E.EN_REVISION_MANUAL},
-    E.CONTINGENCIA_MANUAL: {E.EN_REVISION_MANUAL},
-    E.EN_REVISION_MANUAL: {E.VALIDADA, E.OBSERVADA, E.RECHAZADA},
+    E.CREADA: {E.AUTORIZACION_PENDIENTE, E.LISTA},
+    E.AUTORIZACION_PENDIENTE: {E.LISTA},
+    E.LISTA: {E.EN_CONSULTA},
+    E.EN_CONSULTA: {E.CAPTCHA_REQUERIDO, E.RESULTADO_OBTENIDO, E.FALLIDA},
+    E.CAPTCHA_REQUERIDO: {E.EN_CONSULTA},
+    E.RESULTADO_OBTENIDO: {E.PDF_RECIBIDO},
+    E.PDF_RECIBIDO: {E.DATOS_COINCIDENTES, E.REQUIERE_REVISION},
+    E.DATOS_COINCIDENTES: {E.AUTENTICIDAD_PENDIENTE},
+    E.AUTENTICIDAD_PENDIENTE: {E.VALIDADA, E.REQUIERE_REVISION},
+    E.REQUIERE_REVISION: set(),
+    E.FALLIDA: set(),
     E.VALIDADA: {E.VENCIDA},
-    E.OBSERVADA: set(),
-    E.RECHAZADA: set(),
     E.VENCIDA: set(),
+    E.CANCELADA: set(),
 }
 
+# Extensiones sobre el diagrama de requerimientos:
+# la carga manual siempre está disponible (S2), aun tras un fallo o un CAPTCHA.
+for _origen in (E.LISTA, E.EN_CONSULTA, E.CAPTCHA_REQUERIDO, E.FALLIDA):
+    TRANSICIONES[_origen].add(E.PDF_RECIBIDO)
+# una decisión humana sobre REQUIERE_REVISION valida, pide una nueva carga o anula.
+TRANSICIONES[E.REQUIERE_REVISION] |= {E.VALIDADA, E.LISTA}
+# tras un fallo se puede abrir un nuevo intento.
+TRANSICIONES[E.FALLIDA].add(E.LISTA)
+# cualquier estado no terminal puede anularse con motivo.
+for _origen in TRANSICIONES.keys() - _TERMINALES:
+    TRANSICIONES[_origen].add(E.CANCELADA)
 
-def transicionar(*, verificacion, nuevo_estado: str, actor=None, nota_bitacora: str = "", **campos_modelo):
+# Estados que esperan una acción humana (bandeja).
+ESTADOS_BANDEJA = (E.LISTA, E.CAPTCHA_REQUERIDO, E.PDF_RECIBIDO, E.REQUIERE_REVISION, E.AUTENTICIDAD_PENDIENTE, E.FALLIDA)
+# Estados desde los que el operador puede cargar el resultado a mano.
+ESTADOS_CARGA_MANUAL = (E.LISTA, E.EN_CONSULTA, E.CAPTCHA_REQUERIDO, E.FALLIDA)
+# Estados en los que el revisor decide.
+ESTADOS_DECISION = (E.REQUIERE_REVISION, E.AUTENTICIDAD_PENDIENTE)
+
+
+def transicionar(
+    *, verificacion, nuevo_estado: str, actor=None, nota_bitacora: str = "", motivo: str = "", **campos_modelo
+):
     permitidos = TRANSICIONES.get(verificacion.estado, set())
     if nuevo_estado not in permitidos:
         raise TransicionEstadoInvalida(f"No se puede pasar de '{verificacion.estado}' a '{nuevo_estado}'.")
+    if nuevo_estado == E.CANCELADA:
+        if not motivo.strip():
+            raise DomainError("Anular la solicitud requiere indicar el motivo.")
+        nota_bitacora = f"La solicitud fue anulada con motivo: {motivo.strip()} {nota_bitacora}".strip()
 
     estado_anterior = verificacion.estado
     verificacion.estado = nuevo_estado
@@ -42,7 +63,7 @@ def transicionar(*, verificacion, nuevo_estado: str, actor=None, nota_bitacora: 
     EjecucionConector.objects.create(
         verificacion=verificacion,
         estado_resultante=nuevo_estado,
-        exito=nuevo_estado != E.FALLIDA_TECNICA,
+        exito=nuevo_estado != E.FALLIDA,
         detalle=nota_bitacora,
     )
     emitir_evento(

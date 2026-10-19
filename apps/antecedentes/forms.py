@@ -17,8 +17,8 @@ class RegistrarResultadoManualForm(forms.Form):
 class ValidarVerificacionForm(forms.Form):
     DECISIONES = [
         (EstadoVerificacion.VALIDADA, "Validar"),
-        (EstadoVerificacion.OBSERVADA, "Observar"),
-        (EstadoVerificacion.RECHAZADA, "Rechazar"),
+        (EstadoVerificacion.LISTA, "Devolver para una nueva carga"),
+        (EstadoVerificacion.CANCELADA, "Anular la solicitud"),
     ]
     decision = forms.ChoiceField(choices=DECISIONES, widget=forms.RadioSelect)
     vigente_hasta = forms.DateField(

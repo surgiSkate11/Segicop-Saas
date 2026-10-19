@@ -4,20 +4,53 @@ from apps.core.models import BaseModel, OrganizacionScopedModel
 
 
 class EstadoVerificacion(models.TextChoices):
-    SOLICITADA = "SOLICITADA", "Solicitada"
-    EN_COLA = "EN_COLA", "En cola"
-    EN_PROCESO = "EN_PROCESO", "En proceso"
-    REINTENTANDO = "REINTENTANDO", "Reintentando"
-    FALLIDA_TECNICA = "FALLIDA_TECNICA", "Fallida (técnica)"
-    RESULTADO_SI_OBTENIDO = "RESULTADO_SI_OBTENIDO", "Resultado SI obtenido"
-    RESULTADO_NO_OBTENIDO = "RESULTADO_NO_OBTENIDO", "Resultado NO obtenido"
-    RESULTADO_NO_DETERMINADO = "RESULTADO_NO_DETERMINADO", "Resultado no determinado"
-    CONTINGENCIA_MANUAL = "CONTINGENCIA_MANUAL", "Contingencia manual"
-    EN_REVISION_MANUAL = "EN_REVISION_MANUAL", "En revisión manual"
+    CREADA = "CREADA", "Creada"
+    AUTORIZACION_PENDIENTE = "AUTORIZACION_PENDIENTE", "Autorización pendiente"
+    LISTA = "LISTA", "Lista"
+    EN_CONSULTA = "EN_CONSULTA", "En consulta"
+    CAPTCHA_REQUERIDO = "CAPTCHA_REQUERIDO", "Captcha requerido"
+    RESULTADO_OBTENIDO = "RESULTADO_OBTENIDO", "Resultado obtenido"
+    PDF_RECIBIDO = "PDF_RECIBIDO", "PDF recibido"
+    DATOS_COINCIDENTES = "DATOS_COINCIDENTES", "Datos coincidentes"
+    AUTENTICIDAD_PENDIENTE = "AUTENTICIDAD_PENDIENTE", "Autenticidad pendiente"
     VALIDADA = "VALIDADA", "Validada"
-    OBSERVADA = "OBSERVADA", "Observada"
-    RECHAZADA = "RECHAZADA", "Rechazada"
+    REQUIERE_REVISION = "REQUIERE_REVISION", "Requiere revisión"
+    FALLIDA = "FALLIDA", "Fallida"
     VENCIDA = "VENCIDA", "Vencida"
+    CANCELADA = "CANCELADA", "Cancelada"
+
+
+class EstadoConsulta(models.TextChoices):
+    """Estado técnico de la consulta a una fuente; no es el de la verificación."""
+
+    PENDIENTE = "PENDIENTE", "Pendiente"
+    EN_CURSO = "EN_CURSO", "En curso"
+    CAPTCHA_REQUERIDO = "CAPTCHA_REQUERIDO", "Captcha requerido"
+    REINTENTO_PROGRAMADO = "REINTENTO_PROGRAMADO", "Reintento programado"
+    COMPLETADA = "COMPLETADA", "Completada"
+    FALLIDA = "FALLIDA", "Fallida"
+
+
+# Las bitácoras son de solo-anexado (RN-001): conservan los estados anteriores a la migración 0003.
+ESTADOS_HISTORICOS = {
+    "SOLICITADA": "Solicitada",
+    "EN_COLA": "En cola",
+    "EN_PROCESO": "En proceso",
+    "REINTENTANDO": "Reintentando",
+    "FALLIDA_TECNICA": "Fallida (técnica)",
+    "RESULTADO_SI_OBTENIDO": "Resultado SI obtenido",
+    "RESULTADO_NO_OBTENIDO": "Resultado NO obtenido",
+    "RESULTADO_NO_DETERMINADO": "Resultado no determinado",
+    "CONTINGENCIA_MANUAL": "Contingencia manual",
+    "EN_REVISION_MANUAL": "En revisión manual",
+    "OBSERVADA": "Observada",
+    "RECHAZADA": "Rechazada",
+    "REQUIERE_INTERVENCION": "Requiere intervención",
+    "PORTAL_NO_DISPONIBLE": "Portal no disponible",
+    "CARGA_MANUAL_PENDIENTE": "Carga manual pendiente",
+    "CARGA_MANUAL_COMPLETADA": "Carga manual completada",
+    "ERROR_DEFINITIVO": "Error definitivo",
+}
 
 
 class ModoConector(models.TextChoices):
@@ -45,7 +78,7 @@ class VerificacionAntecedentes(OrganizacionScopedModel):
     persona = models.ForeignKey(
         "personas.Persona", on_delete=models.CASCADE, related_name="verificaciones_antecedentes"
     )
-    estado = models.CharField(max_length=30, choices=EstadoVerificacion.choices, default=EstadoVerificacion.SOLICITADA)
+    estado = models.CharField(max_length=30, choices=EstadoVerificacion.choices, default=EstadoVerificacion.CREADA)
     modo_conector = models.CharField(max_length=10, choices=ModoConector.choices)
     resultado = models.CharField(max_length=20, choices=ResultadoAntecedentes.choices, null=True, blank=True)
     numero_certificado = models.CharField(max_length=100, blank=True)
@@ -69,11 +102,77 @@ class VerificacionAntecedentes(OrganizacionScopedModel):
         return f"{self.persona} · {self.get_estado_display()}"
 
 
+class ProveedorAntecedentes(models.TextChoices):
+    MINISTERIO_INTERIOR = "MINISTERIO_INTERIOR", "Ministerio del Interior"
+    FUNCION_JUDICIAL = "FUNCION_JUDICIAL", "Función Judicial"
+
+
+class ConsultaProveedor(BaseModel):
+    """Consulta independiente por fuente; nunca mezcla sus semánticas."""
+
+    verificacion = models.ForeignKey(
+        VerificacionAntecedentes, on_delete=models.CASCADE, related_name="consultas_proveedor"
+    )
+    proveedor = models.CharField(max_length=30, choices=ProveedorAntecedentes.choices)
+    estado = models.CharField(max_length=35, choices=EstadoConsulta.choices, default=EstadoConsulta.PENDIENTE)
+    intentos = models.PositiveIntegerField(default=0)
+    ultimo_intento_at = models.DateTimeField(null=True, blank=True)
+    proximo_intento_at = models.DateTimeField(null=True, blank=True)
+    codigo_error = models.CharField(max_length=80, blank=True)
+    detalle_error = models.TextField(blank=True)
+    requiere_intervencion = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["verificacion", "proveedor"],
+                name="consulta_unica_por_verificacion_y_proveedor",
+            )
+        ]
+        indexes = [models.Index(fields=["estado", "proximo_intento_at"])]
+
+
+class IntentoConsulta(BaseModel):
+    """Bitácora técnica append-only de cada intento de integración."""
+
+    consulta = models.ForeignKey(ConsultaProveedor, on_delete=models.CASCADE, related_name="intentos_detalle")
+    numero = models.PositiveIntegerField()
+    estado_resultante = models.CharField(max_length=35)  # sin choices: conserva estados históricos
+    codigo_error = models.CharField(max_length=80, blank=True)
+    latencia_ms = models.PositiveIntegerField(null=True, blank=True)
+    detalle = models.TextField(blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["consulta", "numero"], name="intento_unico_por_consulta")
+        ]
+        ordering = ["-created_at"]
+
+
+class DocumentoAntecedentes(BaseModel):
+    """Documento en almacenamiento privado, pendiente o aprobado por validación."""
+
+    consulta = models.ForeignKey(ConsultaProveedor, on_delete=models.CASCADE, related_name="documentos")
+    archivo = models.FileField(upload_to="antecedentes/staging/%Y/%m/")
+    nombre_original = models.CharField(max_length=255, blank=True)
+    mime_type = models.CharField(max_length=100, blank=True)
+    tamano_bytes = models.PositiveBigIntegerField(default=0)
+    sha256 = models.CharField(max_length=64, blank=True)
+    estado_validacion = models.CharField(max_length=30, default="PENDIENTE")
+    identificacion_extraida = models.CharField(max_length=50, blank=True)
+    nombre_extraido = models.CharField(max_length=255, blank=True)
+    numero_certificado = models.CharField(max_length=100, blank=True)
+    detalle_validacion = models.TextField(blank=True)
+    validado_por = models.ForeignKey(
+        "identidad.Usuario", on_delete=models.PROTECT, null=True, blank=True, related_name="+"
+    )
+
+
 class EjecucionConector(BaseModel):
     """Bitácora de solo-anexado; su organización se alcanza vía verificacion.organizacion."""
 
     verificacion = models.ForeignKey(VerificacionAntecedentes, on_delete=models.CASCADE, related_name="ejecuciones")
-    estado_resultante = models.CharField(max_length=30, choices=EstadoVerificacion.choices)
+    estado_resultante = models.CharField(max_length=30)  # sin choices: conserva estados históricos
     exito = models.BooleanField(default=True)
     detalle = models.TextField(blank=True)
 
@@ -81,6 +180,11 @@ class EjecucionConector(BaseModel):
         verbose_name = "Ejecución de conector"
         verbose_name_plural = "Ejecuciones de conector"
         ordering = ["-created_at"]
+
+    def get_estado_resultante_display(self):
+        if self.estado_resultante in EstadoVerificacion.values:
+            return EstadoVerificacion(self.estado_resultante).label
+        return ESTADOS_HISTORICOS.get(self.estado_resultante, self.estado_resultante)
 
     def __str__(self):
         return f"{self.verificacion} -> {self.estado_resultante}"

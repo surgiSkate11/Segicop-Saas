@@ -5,15 +5,12 @@ from django.urls import reverse
 from django.views import View
 from django.views.generic import ListView
 
-from apps.antecedentes import services
+from apps.antecedentes import maquina_estados, services
+from apps.antecedentes.alcance import organizaciones_del_usuario
 from apps.antecedentes.forms import RegistrarResultadoManualForm, ValidarVerificacionForm
-from apps.antecedentes.models import EstadoVerificacion, VerificacionAntecedentes
+from apps.antecedentes.models import VerificacionAntecedentes
 from apps.core.exceptions import DomainError
 from apps.personas.models import Persona
-
-
-def _organizaciones_del_usuario(usuario):
-    return usuario.roles_asignados.filter(activo=True).values_list("organizacion_id", flat=True)
 
 
 class BandejaAntecedentesView(LoginRequiredMixin, ListView):
@@ -23,11 +20,11 @@ class BandejaAntecedentesView(LoginRequiredMixin, ListView):
     paginate_by = 25
 
     def get_queryset(self):
-        organizaciones_ids = _organizaciones_del_usuario(self.request.user)
+        organizaciones_ids = organizaciones_del_usuario(self.request.user)
         return (
             VerificacionAntecedentes.objects.filter(
                 organizacion_id__in=organizaciones_ids,
-                estado__in=[EstadoVerificacion.CONTINGENCIA_MANUAL, EstadoVerificacion.EN_REVISION_MANUAL],
+                estado__in=maquina_estados.ESTADOS_BANDEJA,
             )
             .select_related("persona")
             .order_by("created_at")
@@ -36,7 +33,7 @@ class BandejaAntecedentesView(LoginRequiredMixin, ListView):
 
 class IniciarVerificacionView(LoginRequiredMixin, View):
     def post(self, request, persona_pk):
-        organizaciones_ids = _organizaciones_del_usuario(request.user)
+        organizaciones_ids = organizaciones_del_usuario(request.user)
         persona = get_object_or_404(Persona, pk=persona_pk, organizacion_id__in=organizaciones_ids)
         try:
             verificacion = services.iniciar_verificacion(persona=persona, actor=request.user)
@@ -51,7 +48,7 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
     template_name = "antecedentes/detalle.html"
 
     def _get_verificacion(self, pk):
-        organizaciones_ids = _organizaciones_del_usuario(self.request.user)
+        organizaciones_ids = organizaciones_del_usuario(self.request.user)
         return get_object_or_404(
             VerificacionAntecedentes.objects.select_related("persona"), pk=pk, organizacion_id__in=organizaciones_ids
         )
@@ -61,6 +58,8 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
         contexto = {
             "verificacion": verificacion,
             "ejecuciones": verificacion.ejecuciones.all(),
+            "puede_cargar": verificacion.estado in maquina_estados.ESTADOS_CARGA_MANUAL,
+            "puede_decidir": verificacion.estado in maquina_estados.ESTADOS_DECISION,
             "form_resultado": RegistrarResultadoManualForm(),
             "form_validar": ValidarVerificacionForm(),
         }
@@ -93,7 +92,7 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
             proveedor=form.cleaned_data["proveedor"],
             comentario=form.cleaned_data["comentario"],
         )
-        messages.success(request, "Resultado cargado. Queda pendiente de validación.")
+        messages.success(request, "Resultado cargado. Queda pendiente de revisión.")
 
     def _validar(self, request, verificacion):
         form = ValidarVerificacionForm(request.POST)
