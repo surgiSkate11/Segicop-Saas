@@ -25,9 +25,9 @@ class ValidarVerificacionForm(forms.Form):
     ]
     decision = forms.ChoiceField(choices=DECISIONES, widget=forms.RadioSelect)
     vigente_hasta = forms.DateField(
-        label="Vigente hasta (obligatorio si se valida)",
+        label="Vigente hasta (por defecto, la del certificado; solo puede acortarse)",
         required=False,
-        widget=forms.DateInput(attrs={"class": "sc-input", "type": "date"}),
+        widget=forms.DateInput(attrs={"class": "sc-input", "type": "date"}, format="%Y-%m-%d"),
     )
     comentario = forms.CharField(required=False, widget=forms.Textarea(attrs={"class": "sc-input", "rows": 2}))
 

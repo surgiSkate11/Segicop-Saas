@@ -2930,7 +2930,8 @@ class VerificacionesAPIRevisionTests(UIyAPIBase):
     def test_decisiones_incompletas_o_invalidas_responden_400_sin_cambios(self):
         verificacion = self.con_certificado()
         casos = {
-            "validar sin vigencia": self.datos(vigenteHasta=None),
+            # Sin vigenteHasta se usa la del certificado (S9); extenderla sí es inválido.
+            "vigencia posterior a la del certificado": self.datos(vigenteHasta="2027-05-01"),
             "fecha mal escrita": self.datos(vigenteHasta="mañana"),
             "decisión desconocida": self.datos(decision="APROBADA"),
             "anular sin comentario": self.datos(decision=E.CANCELADA, comentario=""),
@@ -3273,3 +3274,131 @@ class RevocarAutorizacionUITests(UIyAPIBase):
         self.assertRedirects(sin_htmx, reverse("antecedentes:detalle", args=[self.verificacion.pk]))
         self.autorizacion.refresh_from_db()
         self.assertIsNone(self.autorizacion.revocada_en)
+
+
+class VigenciaDelCertificadoTests(UIyAPIBase):
+    """S9 / ANT-012: la vigencia sale del certificado; el revisor no puede extenderla."""
+
+    VALIDO_HASTA = date(2027, 4, 18)  # "Válido hasta el 18 de ABRIL del 2027" en lineas_certificado()
+
+    def test_validar_sin_fecha_usa_la_vigencia_del_certificado(self):
+        verificacion = self.con_certificado()
+
+        services.validar_verificacion(verificacion=verificacion, revisor=self.revisor2, decision=E.VALIDADA)
+
+        verificacion.refresh_from_db()
+        self.assertEqual((verificacion.estado, verificacion.vigente_hasta), (E.VALIDADA, self.VALIDO_HASTA))
+
+    def test_una_fecha_anterior_a_la_del_certificado_se_respeta(self):
+        verificacion = self.con_certificado()
+
+        services.validar_verificacion(
+            verificacion=verificacion, revisor=self.revisor2, decision=E.VALIDADA, vigente_hasta=date(2027, 1, 31)
+        )
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.vigente_hasta, date(2027, 1, 31))
+
+    def test_una_fecha_posterior_a_la_del_certificado_se_rechaza_sin_cambios(self):
+        verificacion = self.con_certificado()
+
+        with self.assertRaisesMessage(DomainError, "no puede superar la del certificado (18/04/2027)"):
+            services.validar_verificacion(
+                verificacion=verificacion, revisor=self.revisor2, decision=E.VALIDADA, vigente_hasta=date(2027, 5, 1)
+            )
+
+        verificacion.refresh_from_db()
+        self.assertEqual((verificacion.estado, verificacion.vigente_hasta), (E.AUTENTICIDAD_PENDIENTE, None))
+
+    def test_sin_certificado_ni_fecha_la_validacion_se_rechaza(self):
+        verificacion = self.crear_verificacion(estado=E.REQUIERE_REVISION, cargado_por=self.operador)
+
+        with self.assertRaisesMessage(DomainError, "hasta cuándo es vigente"):
+            services.validar_verificacion(verificacion=verificacion, revisor=self.revisor2, decision=E.VALIDADA)
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.REQUIERE_REVISION)
+
+    def test_el_formulario_del_revisor_propone_la_vigencia_del_certificado(self):
+        verificacion = self.con_certificado()
+        self.client.force_login(self.revisor2)
+
+        respuesta = self.client.get(reverse("antecedentes:detalle", args=[verificacion.pk]))
+
+        self.assertContains(respuesta, 'value="2027-04-18"')
+
+    def test_la_api_de_revision_acepta_validar_sin_vigente_hasta(self):
+        verificacion = self.con_certificado()
+
+        respuesta = self.enviar_json(
+            reverse("antecedentes:api-v1-revision", args=[verificacion.pk]), {"decision": E.VALIDADA}, self.revisor2
+        )
+
+        verificacion.refresh_from_db()
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertEqual(verificacion.vigente_hasta, self.VALIDO_HASTA)
+
+
+class RenovacionTests(BaseAntecedentesTests):
+    """ANT-012: nueva consulta antes de que venza, solo para quien sigue trabajando."""
+
+    def setUp(self):
+        super().setUp()
+        self.empresa = EmpresaContratista.objects.create(
+            organizacion=self.organizacion, razon_social="Contratista de renovación", ruc="1790000000777"
+        )
+
+    def validada(self, vence_en_dias, persona=None, asignada=True):
+        persona = persona or self.crear_persona()
+        if asignada:
+            Asignacion.objects.create(
+                organizacion=self.organizacion, persona=persona, empresa=self.empresa,
+                cargo_o_actividad="Técnico", fecha_inicio=date.today(),
+            )
+        return self.crear_verificacion(
+            estado=E.VALIDADA, persona=persona, resultado=ResultadoAntecedentes.NO,
+            vigente_hasta=date.today() + timedelta(days=vence_en_dias),
+        )
+
+    def renovaciones(self, persona):
+        return VerificacionAntecedentes.objects.filter(persona=persona, finalidad=F.RENOVACION)
+
+    def test_programa_la_renovacion_de_lo_que_vence_dentro_del_plazo_sin_duplicarla(self):
+        por_vencer = self.validada(vence_en_dias=10)
+
+        primera = services.programar_renovaciones()
+        segunda = services.programar_renovaciones()
+
+        self.assertEqual((primera, segunda), (1, 0))
+        renovacion = self.renovaciones(por_vencer.persona).get()
+        # Sin autorización para esta finalidad no se consulta nada: espera la autorización.
+        self.assertEqual(renovacion.estado, E.AUTORIZACION_PENDIENTE)
+        por_vencer.refresh_from_db()
+        self.assertEqual(por_vencer.estado, E.VALIDADA)
+
+    def test_no_renueva_lo_que_vence_lejos_ni_a_quien_ya_no_tiene_asignacion_activa(self):
+        lejana = self.validada(vence_en_dias=60)
+        sin_asignacion = self.validada(vence_en_dias=5, asignada=False)
+
+        self.assertEqual(services.programar_renovaciones(), 0)
+
+        for verificacion in (lejana, sin_asignacion):
+            self.assertFalse(self.renovaciones(verificacion.persona).exists())
+
+    @override_settings(ANTECEDENTES_DIAS_RENOVACION=30)
+    def test_el_plazo_de_anticipacion_es_configurable(self):
+        a_25_dias = self.validada(vence_en_dias=25)
+
+        self.assertEqual(services.programar_renovaciones(), 1)
+
+        self.assertTrue(self.renovaciones(a_25_dias.persona).exists())
+
+    def test_el_job_diario_programa_las_renovaciones(self):
+        from apps.cumplimiento.jobs import procesar_vencimientos
+
+        por_vencer = self.validada(vence_en_dias=3)
+
+        resultado = procesar_vencimientos()
+
+        self.assertEqual(resultado["renovaciones_antecedentes"], 1)
+        self.assertTrue(self.renovaciones(por_vencer.persona).exists())

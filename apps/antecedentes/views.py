@@ -125,7 +125,10 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
             "bloqueado_cuatro_ojos": espera_decision and es_revisor and cargado_por_mi,
             "espera_revision": espera_decision and not es_revisor,
             "form_resultado": RegistrarResultadoManualForm(),
-            "form_validar": ValidarVerificacionForm(),
+            # S9: se propone la vigencia leída del certificado; el revisor solo puede acortarla.
+            "form_validar": ValidarVerificacionForm(
+                initial={"vigente_hasta": services.vigencia_del_certificado(verificacion) if es_revisor else None}
+            ),
         }
         return render(request, self.template_name, contexto)
 
