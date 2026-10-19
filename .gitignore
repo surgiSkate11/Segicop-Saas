@@ -6,6 +6,8 @@
 *.sqlite3
 # Ignoramos archivos de medios:
 media/
+# Archivos privados (certificados de antecedentes):
+privado/
 staticfiles/
 # Ignoramos archivos de configuración de entorno virtual:
 env/

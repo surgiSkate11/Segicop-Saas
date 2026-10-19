@@ -1,4 +1,8 @@
+import hashlib
 import importlib
+import os
+import shutil
+import tempfile
 import urllib.error
 from email.message import Message
 from datetime import date, timedelta
@@ -6,19 +10,21 @@ from itertools import count, product
 from unittest import mock
 
 from django.apps import apps as django_apps
+from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
-from django.test import TestCase, TransactionTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
 from apps.accesos.services import calcular_habilitacion
-from apps.antecedentes import maquina_estados, services
-from apps.antecedentes.api import _validar_pdf_seguro
+from apps.antecedentes import certificado, maquina_estados, services
+from apps.antecedentes.pdf import MAX_DOCUMENT_BYTES, validar_pdf_seguro
 from apps.antecedentes.models import (
     AutorizacionDatos,
     ConsultaProveedor,
+    DocumentoAntecedentes,
     EjecucionConector,
     EstadoConsulta,
     EstadoVerificacion,
@@ -1528,7 +1534,7 @@ class PdfSeguroTests(TestCase):
     def test_rechaza_archivo_no_pdf_aunque_use_extension_pdf(self):
         archivo = SimpleUploadedFile("documento.pdf", b"<script>alert(1)</script>")
 
-        self.assertEqual(_validar_pdf_seguro(archivo), "El archivo no tiene una estructura PDF válida.")
+        self.assertEqual(validar_pdf_seguro(archivo), "El archivo no tiene una estructura PDF válida.")
 
     def test_rechaza_pdf_con_contenido_activo(self):
         archivo = SimpleUploadedFile(
@@ -1537,19 +1543,19 @@ class PdfSeguroTests(TestCase):
         )
 
         self.assertEqual(
-            _validar_pdf_seguro(archivo),
+            validar_pdf_seguro(archivo),
             "El PDF contiene acciones o archivos incrustados no permitidos.",
         )
 
     def test_acepta_pdf_minimo_sin_contenido_activo(self):
         archivo = SimpleUploadedFile("documento.pdf", b"%PDF-1.7\n1 0 obj << /Type /Catalog >> endobj\n%%EOF")
 
-        self.assertIsNone(_validar_pdf_seguro(archivo))
+        self.assertIsNone(validar_pdf_seguro(archivo))
 
     def test_rechaza_nombre_de_archivo_con_traversal_o_control(self):
         archivo = SimpleUploadedFile("../documento\x00.pdf", b"%PDF-1.7\n%%EOF")
 
-        self.assertEqual(_validar_pdf_seguro(archivo), "El nombre del archivo no es válido.")
+        self.assertEqual(validar_pdf_seguro(archivo), "El nombre del archivo no es válido.")
 
 
 @override_settings(ANTECEDENTES_CONECTOR_MODE="asistido")
@@ -1922,3 +1928,605 @@ class SondeoPortalTests(TestCase):
         self.assertTrue(denegado.evidencia.startswith("HTTP 403 · "))
         self.assertEqual((limitado.clase, limitado.reintentar_tras), (ClaseRespuesta.LIMITADA, 120))
         self.assertIsNone(sin_cabecera.reintentar_tras)
+
+
+
+# --- T5: pipeline del certificado PDF (S7) ---------------------------------------------------------------
+
+
+def _escapar_pdf(texto):
+    return texto.encode("cp1252").replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
+
+
+def crear_pdf(lineas=(), *, firma=False):
+    """PDF de una página, válido y con una línea de texto por elemento (sin fixtures binarios)."""
+    flujo = b""
+    if lineas:
+        flujo = (
+            b"BT /F1 11 Tf 16 TL 50 780 Td "
+            + b"".join(b"(" + _escapar_pdf(linea) + b") Tj T* " for linea in lineas)
+            + b"ET"
+        )
+    objetos = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 842] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length %d >>\nstream\n" % len(flujo) + flujo + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    ]
+    if firma:
+        objetos.append(
+            b"<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached "
+            b"/ByteRange [0 10 20 30] /Contents <00> >>"
+        )
+    salida = bytearray(b"%PDF-1.4\n")
+    posiciones = []
+    for numero, cuerpo in enumerate(objetos, start=1):
+        posiciones.append(len(salida))
+        salida += b"%d 0 obj\n" % numero + cuerpo + b"\nendobj\n"
+    inicio_xref = len(salida)
+    salida += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objetos) + 1)
+    for posicion in posiciones:
+        salida += b"%010d 00000 n \n" % posicion
+    salida += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objetos) + 1, inicio_xref)
+    return bytes(salida)
+
+
+def lineas_certificado(
+    identificacion="1111111111", nombres="EVALUADA PERSONA", resultado="NO", numero="MI-2026-004455", firmado=True
+):
+    lineas = [
+        "MINISTERIO DEL INTERIOR",
+        "CERTIFICADO DE ANTECEDENTES PENALES",
+        "Fecha de Emisión: 19 de octubre de 2026",
+        f"Número de Certificado: {numero}",
+        "Tipo de Documento: CÉDULA",
+        f"No. de Identificación: {identificacion}",
+        f"Apellidos y Nombres: {nombres}",
+        f"Registra Antecedentes: {resultado}",
+        "Válido hasta el 18 de ABRIL del 2027",
+    ]
+    if firmado:
+        lineas.append("Documento firmado electrónicamente")
+    return [linea for linea in lineas if not linea.endswith(": ")]
+
+
+class CertificadoParserTests(SimpleTestCase):
+    """Parser puro del diseño del certificado (S7); no hay PDF real de muestra, por eso es tolerante."""
+
+    def test_extrae_los_campos_del_diseno_del_certificado(self):
+        datos = certificado.analizar_texto("\n".join(lineas_certificado()))
+
+        self.assertEqual(datos.fecha_emision, date(2026, 10, 19))
+        self.assertEqual(datos.numero_certificado, "MI-2026-004455")
+        self.assertEqual(datos.tipo_documento, "CÉDULA")
+        self.assertEqual(datos.identificacion, "1111111111")
+        self.assertEqual(datos.nombres, "EVALUADA PERSONA")
+        self.assertEqual(datos.resultado, "NO")
+        self.assertEqual(datos.vigente_hasta, date(2027, 4, 18))
+        self.assertTrue(datos.marca_firma)
+
+    def test_tolera_tildes_ausentes_mayusculas_saltos_de_linea_y_dos_puntos(self):
+        texto = (
+            "FECHA DE EMISION\n2026-10-19 08:31:22\n"
+            "numero de certificado   MI-77\n"
+            "NO. DE IDENTIFICACION\n  1111111111  \n"
+            "apellidos y nombres\nEVALUADA\nPERSONA\n"
+            "Registra Antecedentes  SÍ\n"
+            "valido hasta el 3 de setiembre del 2027\n"
+            "documento firmado electronicamente"
+        )
+
+        datos = certificado.analizar_texto(texto)
+
+        self.assertEqual(datos.fecha_emision, date(2026, 10, 19))
+        self.assertEqual(datos.numero_certificado, "MI-77")
+        self.assertEqual(datos.identificacion, "1111111111")
+        self.assertEqual(datos.nombres, "EVALUADA PERSONA")
+        self.assertEqual(datos.resultado, "SI")
+        self.assertEqual(datos.vigente_hasta, date(2027, 9, 3))
+        self.assertTrue(datos.marca_firma)
+
+    def test_texto_ajeno_o_incompleto_no_inventa_valores(self):
+        textos = (
+            "",
+            "Factura 001-001 total 25.00",
+            "Registra Antecedentes: TAL VEZ\nVálido hasta el 31 de febrero del 2027",
+        )
+        for texto in textos:
+            with self.subTest(texto=texto):
+                datos = certificado.analizar_texto(texto)
+
+                self.assertIsNone(datos.resultado)
+                self.assertIsNone(datos.vigente_hasta)
+                self.assertIsNone(datos.fecha_emision)
+                self.assertEqual((datos.identificacion, datos.nombres, datos.numero_certificado), ("", "", ""))
+                self.assertFalse(datos.marca_firma)
+
+    def test_nombres_equivalentes_ignoran_orden_tildes_mayusculas_y_espacios(self):
+        self.assertTrue(certificado.nombres_equivalentes("  PÉREZ   gómez  juan ", "Juan Pérez Gomez"))
+        self.assertFalse(certificado.nombres_equivalentes("JUAN PEREZ", "Juan Carlos Perez"))
+        self.assertFalse(certificado.nombres_equivalentes("", ""))
+
+
+class PipelineCertificadoBase(BaseAntecedentesTests):
+    """Almacenamiento privado en un directorio temporal; opera el operador y decide otro revisor."""
+
+    def setUp(self):
+        super().setUp()
+        self.raiz = tempfile.mkdtemp(prefix="antecedentes-pruebas-")
+        self.addCleanup(shutil.rmtree, self.raiz, True)
+        ajustes = self.settings(ANTECEDENTES_PRIVATE_ROOT=self.raiz)
+        ajustes.enable()
+        self.addCleanup(ajustes.disable)
+        self.operador = self.crear_usuario("operador-pdf@example.com", "operador_antecedentes")
+        self.revisor2 = self.crear_usuario("revisor2-pdf@example.com", "revisor_antecedentes")
+
+    def verificacion_lista(self, estado=E.LISTA, persona=None):
+        persona = persona or self.persona
+        # Una sola solicitud activa por persona y finalidad: las subpruebas parten de cero.
+        persona.verificaciones_antecedentes.all().delete()
+        verificacion = self.crear_verificacion(estado=estado, persona=persona)
+        consulta = ConsultaProveedor.objects.create(
+            verificacion=verificacion, proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR
+        )
+        return verificacion, consulta
+
+    def pdf_subido(self, contenido, nombre="certificado.pdf"):
+        return SimpleUploadedFile(nombre, contenido, content_type="application/pdf")
+
+    def cargar(self, verificacion, contenido, actor=None, nombre="certificado.pdf"):
+        return services.cargar_certificado(
+            verificacion=verificacion, archivo=self.pdf_subido(contenido, nombre), actor=actor or self.operador
+        )
+
+    def estados_bitacora(self, verificacion):
+        return list(verificacion.ejecuciones.order_by("created_at").values_list("estado_resultante", flat=True))
+
+    def eventos(self, accion):
+        return EventoAuditoria.objects.filter(accion=accion)
+
+    def archivos_guardados(self):
+        return [nombre for _, _, nombres in os.walk(self.raiz) for nombre in nombres]
+
+
+class CargarCertificadoTests(PipelineCertificadoBase):
+    def test_certificado_que_coincide_llega_a_autenticidad_pendiente_y_conserva_la_cadena_de_custodia(self):
+        verificacion, consulta = self.verificacion_lista()
+        contenido = crear_pdf(lineas_certificado())
+
+        documento, creado = self.cargar(verificacion, contenido, nombre="Mi Certificado.pdf")
+
+        verificacion.refresh_from_db()
+        consulta.refresh_from_db()
+        self.assertTrue(creado)
+        self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+        self.assertEqual(
+            self.estados_bitacora(verificacion), [E.PDF_RECIBIDO, E.DATOS_COINCIDENTES, E.AUTENTICIDAD_PENDIENTE]
+        )
+        self.assertEqual(verificacion.cargado_por, self.operador)
+        self.assertEqual(verificacion.resultado, ResultadoAntecedentes.NO)
+        self.assertEqual(verificacion.numero_certificado, "MI-2026-004455")
+        self.assertEqual(timezone.localtime(verificacion.fecha_resultado).date(), date(2026, 10, 19))
+        self.assertEqual(verificacion.proveedor, "Ministerio del Interior")
+        self.assertIsNone(verificacion.vigente_hasta)  # la vigencia la decide el revisor (T7)
+        self.assertIsNone(verificacion.validado_por)
+        self.assertEqual(consulta.estado, EstadoConsulta.COMPLETADA)
+
+        self.assertEqual(documento.consulta, consulta)
+        self.assertEqual(documento.sha256, hashlib.sha256(contenido).hexdigest())
+        self.assertEqual(documento.nombre_original, "Mi Certificado.pdf")
+        self.assertEqual(documento.tamano_bytes, len(contenido))
+        self.assertEqual(documento.estado_validacion, "DATOS_COINCIDENTES")
+        self.assertEqual(documento.codigo_error, "")
+        self.assertEqual(documento.identificacion_extraida, "1111111111")
+        self.assertEqual(documento.nombre_extraido, "EVALUADA PERSONA")
+        self.assertEqual(documento.numero_certificado, "MI-2026-004455")
+        self.assertEqual(documento.resultado_extraido, "NO")
+        self.assertEqual(documento.fecha_emision, date(2026, 10, 19))
+        self.assertEqual(documento.vigente_hasta_extraida, date(2027, 4, 18))
+        self.assertFalse(documento.firma_detectada)
+        self.assertIn("firmado electrónicamente", documento.detalle_validacion)
+        self.assertIn("pendiente", documento.detalle_validacion.lower())
+
+        # Original intacto, en almacenamiento privado y fuera de /media/.
+        with documento.archivo.open("rb") as almacenado:
+            self.assertEqual(almacenado.read(), contenido)
+        ruta = os.path.abspath(documento.archivo.path)
+        self.assertTrue(ruta.startswith(os.path.abspath(self.raiz)))
+        self.assertFalse(ruta.startswith(os.path.abspath(settings.MEDIA_ROOT)))
+        self.assertNotIn("Mi Certificado", documento.archivo.name)
+
+        evento = self.eventos("DOCUMENTO_ANTECEDENTES_RECIBIDO").get()
+        self.assertEqual(evento.recurso_id, str(documento.pk))
+        self.assertEqual(evento.actor, self.operador)
+        self.assertEqual(evento.organizacion, self.organizacion)
+        self.assertEqual(evento.metadata["sha256"], documento.sha256)
+        for personal in ("1111111111", "EVALUADA", "Persona"):
+            self.assertNotIn(personal, evento.motivo)
+            self.assertNotIn(personal, str(evento.metadata))
+
+    def test_resultado_si_con_identidad_correcta_tambien_queda_para_autenticidad(self):
+        verificacion, _ = self.verificacion_lista()
+
+        documento, _ = self.cargar(verificacion, crear_pdf(lineas_certificado(resultado="SI")))
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+        self.assertEqual(verificacion.resultado, ResultadoAntecedentes.SI)
+        self.assertEqual(documento.resultado_extraido, "SI")
+
+    def test_la_carga_esta_disponible_desde_todos_los_estados_de_carga_manual(self):
+        for estado in maquina_estados.ESTADOS_CARGA_MANUAL:
+            with self.subTest(estado=estado):
+                verificacion, _ = self.verificacion_lista(estado)
+
+                self.cargar(verificacion, crear_pdf(lineas_certificado()))
+
+                verificacion.refresh_from_db()
+                self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+
+    def test_firma_electronica_detectada_se_registra_sin_darla_por_valida(self):
+        verificacion, _ = self.verificacion_lista()
+
+        documento, _ = self.cargar(verificacion, crear_pdf(lineas_certificado(), firma=True))
+
+        self.assertTrue(documento.firma_detectada)
+        self.assertIn("validación criptográfica", documento.detalle_validacion)
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+
+    def test_nombres_en_otro_orden_con_tildes_y_mayusculas_coinciden(self):
+        self.persona.nombres = "José Ángel"
+        self.persona.apellidos = "Núñez Pérez"
+        self.persona.save()
+        verificacion, _ = self.verificacion_lista()
+
+        self.cargar(verificacion, crear_pdf(lineas_certificado(nombres="PEREZ NUÑEZ  JOSE ANGEL")))
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+
+    def test_identidad_distinta_exige_revision_conserva_el_original_y_bloquea_la_aceptacion(self):
+        casos = {
+            "otra cédula": lineas_certificado(identificacion="1111111112"),
+            "cédula con un dígito de más": lineas_certificado(identificacion="11111111111"),
+            "otro nombre": lineas_certificado(nombres="OTRA PERSONA DISTINTA"),
+        }
+        for nombre, lineas in casos.items():
+            with self.subTest(caso=nombre):
+                verificacion, _ = self.verificacion_lista()
+                contenido = crear_pdf(lineas)
+
+                documento, _ = self.cargar(verificacion, contenido)
+
+                verificacion.refresh_from_db()
+                self.assertEqual(verificacion.estado, E.REQUIERE_REVISION)
+                self.assertEqual(self.estados_bitacora(verificacion), [E.PDF_RECIBIDO, E.REQUIERE_REVISION])
+                self.assertEqual(documento.estado_validacion, "REQUIERE_REVISION")
+                self.assertEqual(documento.codigo_error, "ANT_IDENTITY_MISMATCH")
+                self.assertIsNone(verificacion.resultado)  # no se copia el resultado de otra identidad
+                self.assertEqual(verificacion.cargado_por, self.operador)
+                with documento.archivo.open("rb") as almacenado:
+                    self.assertEqual(almacenado.read(), contenido)
+
+                bitacora = verificacion.ejecuciones.count()
+                with self.assertRaises(DomainError):
+                    services.validar_verificacion(
+                        verificacion=verificacion,
+                        revisor=self.revisor2,
+                        decision=E.VALIDADA,
+                        vigente_hasta=date.today() + timedelta(days=30),
+                    )
+                verificacion.refresh_from_db()
+                self.assertEqual(verificacion.estado, E.REQUIERE_REVISION)
+                self.assertEqual(verificacion.ejecuciones.count(), bitacora)
+                # Escalar: el revisor sí puede devolver el caso para una nueva carga.
+                services.validar_verificacion(
+                    verificacion=verificacion, revisor=self.revisor2, decision=E.LISTA, comentario="Documento ajeno."
+                )
+
+    def test_resultado_o_campos_ausentes_son_ambiguos_y_van_a_revision(self):
+        casos = {
+            "sin resultado": lineas_certificado(resultado=""),
+            "resultado no reconocido": lineas_certificado(resultado="TAL VEZ"),
+            "sin identificación": lineas_certificado(identificacion=""),
+            "sin nombres": lineas_certificado(nombres=""),
+            "texto ajeno": ["Factura 001-001", "Total 25.00"],
+        }
+        for nombre, lineas in casos.items():
+            with self.subTest(caso=nombre):
+                verificacion, _ = self.verificacion_lista()
+
+                documento, _ = self.cargar(verificacion, crear_pdf(lineas))
+
+                verificacion.refresh_from_db()
+                self.assertEqual(verificacion.estado, E.REQUIERE_REVISION)
+                self.assertEqual(self.estados_bitacora(verificacion), [E.PDF_RECIBIDO, E.REQUIERE_REVISION])
+                self.assertEqual(documento.codigo_error, "ANT_RESULT_AMBIGUOUS")
+                self.assertEqual(documento.estado_validacion, "REQUIERE_REVISION")
+                self.assertIsNone(verificacion.resultado)
+
+    def test_pdf_ilegible_cifrado_danado_o_sin_texto_va_a_cuarentena_sin_cambiar_el_caso(self):
+        valido = crear_pdf(lineas_certificado())
+        casos = {
+            "no es un PDF": b"<script>alert(1)</script>",
+            "cifrado": valido.replace(b"/Root 1 0 R", b"/Root 1 0 R /Encrypt 9 0 R"),
+            "contenido activo": valido.replace(b"/Type /Catalog", b"/Type /Catalog /OpenAction 2 0 R"),
+            "dañado": b"%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n" + valido[200:900] + b"\n%%EOF",
+            "sin texto": crear_pdf(()),
+        }
+        for nombre, contenido in casos.items():
+            with self.subTest(caso=nombre):
+                verificacion, consulta = self.verificacion_lista(E.EN_CONSULTA)
+                bitacora = verificacion.ejecuciones.count()
+
+                with self.assertRaises(services.DocumentoInvalido) as contexto:
+                    self.cargar(verificacion, contenido)
+
+                self.assertEqual(contexto.exception.codigo, "ANT_DOCUMENT_INVALID")
+                documento = DocumentoAntecedentes.objects.get(consulta=consulta)
+                self.assertEqual(contexto.exception.documento, documento)
+                self.assertEqual(documento.estado_validacion, "CUARENTENA")
+                self.assertEqual(documento.codigo_error, "ANT_DOCUMENT_INVALID")
+                self.assertEqual(documento.detalle_validacion.split(" Se conserva")[0], str(contexto.exception))
+                self.assertEqual(documento.sha256, hashlib.sha256(contenido).hexdigest())
+                self.assertEqual(documento.resultado_extraido, "")
+                with documento.archivo.open("rb") as almacenado:
+                    self.assertEqual(almacenado.read(), contenido)
+                verificacion.refresh_from_db()
+                consulta.refresh_from_db()
+                self.assertEqual(verificacion.estado, E.EN_CONSULTA)
+                self.assertIsNone(verificacion.cargado_por)
+                self.assertIsNone(verificacion.resultado)
+                self.assertEqual(verificacion.ejecuciones.count(), bitacora)
+                self.assertEqual(consulta.estado, EstadoConsulta.PENDIENTE)
+                evento = self.eventos("DOCUMENTO_ANTECEDENTES_RECIBIDO").get(recurso_id=str(documento.pk))
+                self.assertEqual(evento.metadata["sha256"], documento.sha256)
+                self.assertEqual(evento.metadata["estado_validacion"], "CUARENTENA")
+
+                # Tras la cuarentena se puede cargar otro certificado.
+                self.cargar(verificacion, crear_pdf(lineas_certificado(numero="MI-OTRO")))
+                verificacion.refresh_from_db()
+                self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+
+    def test_el_mismo_archivo_no_se_duplica_ni_repite_efectos(self):
+        verificacion, consulta = self.verificacion_lista()
+        contenido = crear_pdf(lineas_certificado())
+        primero, creado_primero = self.cargar(verificacion, contenido)
+        verificacion.refresh_from_db()
+        bitacora = verificacion.ejecuciones.count()
+        eventos = EventoAuditoria.objects.count()
+
+        segundo, creado_segundo = self.cargar(verificacion, contenido)
+
+        self.assertEqual((creado_primero, creado_segundo), (True, False))
+        self.assertEqual(segundo.pk, primero.pk)
+        self.assertEqual(DocumentoAntecedentes.objects.filter(consulta=consulta).count(), 1)
+        self.assertEqual(len(self.archivos_guardados()), 1)
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+        self.assertEqual(verificacion.ejecuciones.count(), bitacora)
+        self.assertEqual(EventoAuditoria.objects.count(), eventos)
+
+    def test_el_mismo_archivo_en_cuarentena_no_crea_otra_fila(self):
+        verificacion, consulta = self.verificacion_lista()
+        for _ in range(2):
+            with self.assertRaises(services.DocumentoInvalido):
+                self.cargar(verificacion, b"%PDF-1.4\nbasura\n%%EOF")
+
+        self.assertEqual(DocumentoAntecedentes.objects.filter(consulta=consulta).count(), 1)
+        self.assertEqual(self.eventos("DOCUMENTO_ANTECEDENTES_RECIBIDO").count(), 1)
+
+    def test_estado_que_no_admite_carga_se_rechaza_sin_guardar_nada(self):
+        for estado in [e for e in EstadoVerificacion if e not in maquina_estados.ESTADOS_CARGA_MANUAL]:
+            with self.subTest(estado=estado):
+                verificacion, _ = self.verificacion_lista(estado)
+
+                with self.assertRaises(DomainError) as contexto:
+                    self.cargar(verificacion, crear_pdf(lineas_certificado()))
+
+                self.assertNotIsInstance(contexto.exception, services.DocumentoInvalido)
+                verificacion.refresh_from_db()
+                self.assertEqual(verificacion.estado, estado)
+                self.assertEqual(DocumentoAntecedentes.objects.count(), 0)
+                self.assertEqual(self.eventos("DOCUMENTO_ANTECEDENTES_RECIBIDO").count(), 0)
+        self.assertEqual(self.archivos_guardados(), [])
+
+    def test_nombre_vacio_o_tamano_fuera_de_limite_se_rechazan_sin_guardar_nada(self):
+        verificacion, _ = self.verificacion_lista()
+        tamano = "El archivo debe tener entre 1 byte y 10 MB."
+        nombre_invalido = "El nombre del archivo no es válido."
+        casos = {
+            "demasiado grande": (b"%PDF-1.4\n" + b"0" * MAX_DOCUMENT_BYTES + b"\n%%EOF", "c.pdf", tamano),
+            "vacío": (b"", "c.pdf", tamano),
+            "nombre con control": (crear_pdf(lineas_certificado()), "../c\x00.pdf", nombre_invalido),
+            "sin extensión pdf": (crear_pdf(lineas_certificado()), "c.exe", nombre_invalido),
+        }
+        for nombre, (contenido, archivo, mensaje) in casos.items():
+            with self.subTest(caso=nombre):
+                with self.assertRaises(services.DocumentoInvalido) as contexto:
+                    self.cargar(verificacion, contenido, nombre=archivo)
+
+                self.assertEqual(str(contexto.exception), mensaje)
+                self.assertIsNone(contexto.exception.documento)
+                verificacion.refresh_from_db()
+                self.assertEqual(verificacion.estado, E.LISTA)
+        self.assertEqual(DocumentoAntecedentes.objects.count(), 0)
+        self.assertEqual(self.archivos_guardados(), [])
+
+    def test_validacion_estructural_conserva_sus_mensajes_al_vivir_en_el_servicio(self):
+        cifrado = SimpleUploadedFile("c.pdf", b"%PDF-1.7\n/Encrypt 1 0 R\n%%EOF")
+        sin_eof = SimpleUploadedFile("c.pdf", b"%PDF-1.7\n1 0 obj endobj")
+        grande = SimpleUploadedFile("c.pdf", b"%PDF-" + b"0" * MAX_DOCUMENT_BYTES)
+
+        self.assertEqual(validar_pdf_seguro(cifrado), "No se aceptan PDF cifrados.")
+        self.assertEqual(validar_pdf_seguro(sin_eof), "El archivo no tiene una estructura PDF válida.")
+        self.assertEqual(validar_pdf_seguro(grande), "El archivo debe tener entre 1 byte y 10 MB.")
+
+
+class CargarCertificadoAPITests(PipelineCertificadoBase):
+    def url(self, consulta):
+        return reverse("antecedentes:api-cargar-documento", args=[consulta.pk])
+
+    def test_carga_valida_responde_201_y_el_reintento_200_con_el_mismo_documento(self):
+        verificacion, consulta = self.verificacion_lista()
+        contenido = crear_pdf(lineas_certificado())
+        self.client.force_login(self.operador)
+
+        primera = self.client.post(self.url(consulta), {"archivo": self.pdf_subido(contenido)})
+        repetida = self.client.post(self.url(consulta), {"archivo": self.pdf_subido(contenido)})
+
+        documento = DocumentoAntecedentes.objects.get(consulta=consulta)
+        self.assertEqual(primera.status_code, 201)
+        self.assertEqual(primera.json(), {"documento_id": str(documento.pk), "estado": "DATOS_COINCIDENTES"})
+        self.assertEqual(repetida.status_code, 200)
+        self.assertEqual(repetida.json(), primera.json())
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+        self.assertEqual(verificacion.cargado_por, self.operador)
+        self.assertEqual(self.eventos("DOCUMENTO_ANTECEDENTES_RECIBIDO").count(), 1)
+
+    def test_pdf_invalido_responde_400_con_codigo_y_deja_el_documento_en_cuarentena(self):
+        verificacion, consulta = self.verificacion_lista(E.CAPTCHA_REQUERIDO)
+        self.client.force_login(self.operador)
+
+        respuesta = self.client.post(self.url(consulta), {"archivo": self.pdf_subido(b"%PDF-1.4\nbasura\n%%EOF")})
+
+        documento = DocumentoAntecedentes.objects.get(consulta=consulta)
+        self.assertEqual(respuesta.status_code, 400)
+        self.assertEqual(
+            respuesta.json(),
+            {"code": "ANT_DOCUMENT_INVALID", "detail": documento.detalle_validacion.split(" Se conserva")[0]},
+        )
+        self.assertEqual(documento.estado_validacion, "CUARENTENA")
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.CAPTCHA_REQUERIDO)
+
+    def test_estado_incorrecto_archivo_ausente_y_nombre_invalido_responden_400_sin_guardar(self):
+        _, consulta_revision = self.verificacion_lista(E.REQUIERE_REVISION)
+        _, consulta_lista = self.verificacion_lista(persona=self.crear_persona())
+        contenido = crear_pdf(lineas_certificado())
+        self.client.force_login(self.operador)
+
+        estado = self.client.post(self.url(consulta_revision), {"archivo": self.pdf_subido(contenido)})
+        ausente = self.client.post(self.url(consulta_lista), {})
+        nombre = self.client.post(self.url(consulta_lista), {"archivo": self.pdf_subido(contenido, "c.exe")})
+
+        self.assertEqual(estado.status_code, 400)
+        self.assertNotIn("code", estado.json())
+        self.assertEqual(ausente.status_code, 400)
+        self.assertEqual(ausente.json(), {"detail": "El campo archivo es obligatorio."})
+        self.assertEqual(nombre.status_code, 400)
+        self.assertEqual(
+            nombre.json(), {"code": "ANT_DOCUMENT_INVALID", "detail": "El nombre del archivo no es válido."}
+        )
+        self.assertEqual(DocumentoAntecedentes.objects.count(), 0)
+
+    def test_el_operador_no_ve_lo_extraido_y_el_revisor_si(self):
+        verificacion, _ = self.verificacion_lista()
+        self.cargar(verificacion, crear_pdf(lineas_certificado(resultado="SI")))
+        url = reverse("antecedentes:api-detalle", args=[verificacion.pk])
+
+        self.client.force_login(self.operador)
+        operador = self.client.get(url)
+        self.client.force_login(self.revisor2)
+        revisor = self.client.get(url)
+
+        nuevos = {"resultado_extraido", "fecha_emision", "vigente_hasta_extraida", "firma_detectada", "codigo_error"}
+        doc_operador = operador.json()["consultas_proveedor"][0]["documentos"][0]
+        doc_revisor = revisor.json()["consultas_proveedor"][0]["documentos"][0]
+        self.assertTrue(nuevos.isdisjoint(doc_operador))
+        self.assertTrue(nuevos <= set(doc_revisor))
+        self.assertEqual(doc_revisor["resultado_extraido"], "SI")
+        self.assertEqual(doc_revisor["fecha_emision"], "2026-10-19")
+        self.assertEqual(doc_revisor["vigente_hasta_extraida"], "2027-04-18")
+        self.assertFalse(doc_revisor["firma_detectada"])
+        for reservado in ("1111111111", "EVALUADA PERSONA", "MI-2026-004455"):
+            self.assertNotIn(reservado, operador.content.decode())
+
+
+class DescargarDocumentoTests(PipelineCertificadoBase):
+    def setUp(self):
+        super().setUp()
+        self.otra_org = Organizacion.objects.create(nombre="Otra organización de PDF")
+        self.verificacion, self.consulta = self.verificacion_lista()
+        self.contenido = crear_pdf(lineas_certificado())
+        self.documento, _ = self.cargar(self.verificacion, self.contenido, nombre="mi certificado.pdf")
+        self.url = reverse("antecedentes:descargar-documento", args=[self.documento.pk])
+
+    def leer(self, respuesta):
+        try:
+            return b"".join(respuesta.streaming_content)
+        finally:
+            respuesta.close()
+
+    def lecturas(self):
+        return self.eventos("DESCARGAR_DOCUMENTO_ANTECEDENTES")
+
+    def test_el_revisor_descarga_el_original_como_adjunto_y_queda_auditado(self):
+        self.client.force_login(self.revisor2)
+
+        respuesta = self.client.get(self.url)
+
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertEqual(self.leer(respuesta), self.contenido)
+        self.assertEqual(respuesta["Content-Type"], "application/pdf")
+        self.assertIn("attachment", respuesta["Content-Disposition"])
+        self.assertIn("mi certificado.pdf", respuesta["Content-Disposition"])
+        self.assertEqual(respuesta["X-Content-Type-Options"], "nosniff")
+        self.assertIn("no-store", respuesta["Cache-Control"])
+        evento = self.lecturas().get()
+        self.assertEqual(evento.actor, self.revisor2)
+        self.assertEqual(evento.recurso_id, str(self.documento.pk))
+        self.assertEqual(evento.organizacion, self.organizacion)
+        self.assertEqual(evento.metadata["sha256"], self.documento.sha256)
+
+    def test_el_revisor_tambien_descarga_un_documento_en_cuarentena(self):
+        verificacion, _ = self.verificacion_lista(persona=self.crear_persona())
+        basura = b"%PDF-1.4\nbasura\n%%EOF"
+        with self.assertRaises(services.DocumentoInvalido) as contexto:
+            self.cargar(verificacion, basura)
+        self.client.force_login(self.revisor2)
+
+        respuesta = self.client.get(reverse("antecedentes:descargar-documento", args=[contexto.exception.documento.pk]))
+
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertEqual(self.leer(respuesta), basura)
+        self.assertEqual(self.lecturas().count(), 1)
+
+    def test_el_operador_recibe_403_y_quienes_no_tienen_rol_en_la_organizacion_404_sin_auditar(self):
+        garita = self.crear_usuario("garita-pdf@example.com", "seguridad_garita")
+        ajeno = self.crear_usuario("ajeno-pdf@example.com", "revisor_antecedentes", self.otra_org)
+        sin_roles = self.crear_usuario("sinroles-pdf@example.com")
+        superusuario = Usuario.objects.create_superuser(email="super-pdf@example.com", password="x")
+        esperado = {self.operador: 403, garita: 404, ajeno: 404, sin_roles: 404, superusuario: 404}
+        for usuario, codigo in esperado.items():
+            with self.subTest(usuario=usuario.email):
+                self.client.force_login(usuario)
+
+                respuesta = self.client.get(self.url)
+
+                self.assertEqual(respuesta.status_code, codigo)
+                self.assertFalse(respuesta.streaming)
+        self.assertEqual(self.lecturas().count(), 0)
+
+    def test_sin_sesion_redirige_al_ingreso_y_un_documento_inexistente_es_404(self):
+        anonimo = self.client.get(self.url)
+        self.client.force_login(self.revisor2)
+        inexistente = self.client.get(
+            reverse("antecedentes:descargar-documento", args=["00000000-0000-0000-0000-000000000000"])
+        )
+
+        self.assertEqual(anonimo.status_code, 302)
+        self.assertIn("login", anonimo["Location"])
+        self.assertEqual(inexistente.status_code, 404)
+        self.assertEqual(self.lecturas().count(), 0)
+
+    def test_los_archivos_no_se_sirven_desde_media(self):
+        self.client.force_login(self.revisor2)
+
+        respuesta = self.client.get(f"/{settings.MEDIA_URL}{self.documento.archivo.name}")
+
+        self.assertEqual(respuesta.status_code, 404)

@@ -1,11 +1,16 @@
+import hashlib
+import os
 import time
-from datetime import timedelta
+import uuid
+from datetime import datetime, timedelta
+from datetime import time as hora_del_dia
 
 from django.conf import settings
+from django.core.files.base import ContentFile
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from apps.antecedentes import maquina_estados, permisos
+from apps.antecedentes import certificado, maquina_estados, pdf, permisos
 from apps.antecedentes.conectores.asistido import ConectorAsistido
 from apps.antecedentes.conectores.base import ClaseRespuesta
 from apps.antecedentes.conectores.factory import obtener_conector
@@ -14,6 +19,7 @@ from apps.antecedentes.models import (
     ESTADOS_CERRADOS,
     AutorizacionDatos,
     ConsultaProveedor,
+    DocumentoAntecedentes,
     EstadoConsulta,
     EstadoVerificacion,
     FinalidadConsulta,
@@ -25,6 +31,7 @@ from apps.antecedentes.models import (
     SaludFuente,
     VerificacionAntecedentes,
 )
+from apps.antecedentes.pdf import DocumentoInvalido
 from apps.core.events import emitir_evento
 from apps.core.exceptions import DomainError
 from apps.identidad.models import Rol, RolAsignado
@@ -34,6 +41,12 @@ from apps.personas.models import Persona
 ANT_CAPTCHA_REQUIRED = "ANT_CAPTCHA_REQUIRED"
 ANT_SOURCE_UNAVAILABLE = "ANT_SOURCE_UNAVAILABLE"
 ANT_RATE_LIMITED = "ANT_RATE_LIMITED"
+ANT_DOCUMENT_INVALID = pdf.ANT_DOCUMENT_INVALID
+ANT_IDENTITY_MISMATCH = "ANT_IDENTITY_MISMATCH"
+ANT_RESULT_AMBIGUOUS = "ANT_RESULT_AMBIGUOUS"
+
+CUARENTENA = "CUARENTENA"
+_SUFIJO_CUARENTENA = " Se conserva el original en cuarentena; carga otro archivo o solicita revisión."
 
 _esperar = time.sleep  # punto de inyección para las pruebas
 
@@ -536,6 +549,194 @@ def cambiar_estado_consulta(
     return consulta
 
 
+# --- Certificado PDF: validación, custodia, lectura e identidad (S7, ANT-006..010) ---
+
+
+def _motivo_de_cuarentena(documento: DocumentoAntecedentes) -> str:
+    return documento.detalle_validacion.removesuffix(_SUFIJO_CUARENTENA)
+
+
+def _guardar_documento(consulta, archivo, contenido: bytes, sha256: str) -> DocumentoAntecedentes:
+    """Conserva los bytes originales en el almacenamiento privado, con un nombre propio (nunca el del usuario)."""
+    documento = DocumentoAntecedentes(
+        consulta=consulta,
+        nombre_original=os.path.basename(str(archivo.name))[:255],
+        mime_type="application/pdf",
+        tamano_bytes=len(contenido),
+        sha256=sha256,
+        estado_validacion="PENDIENTE",
+    )
+    documento.archivo.save(f"antecedente-{uuid.uuid4().hex}.pdf", ContentFile(contenido), save=False)
+    documento.save()
+    return documento
+
+
+def _fecha_resultado(fecha_emision):
+    if not fecha_emision:
+        return timezone.now()
+    return timezone.make_aware(datetime.combine(fecha_emision, hora_del_dia.min))
+
+
+def _codigo_de_identidad(datos: certificado.CertificadoExtraido, persona) -> str:
+    """ANT-008: cédula idéntica y nombres equivalentes; cualquier diferencia exige revisión."""
+    if datos.identificacion and datos.identificacion != persona.numero_documento.strip():
+        return ANT_IDENTITY_MISMATCH
+    if datos.nombres and not certificado.nombres_equivalentes(datos.nombres, f"{persona.apellidos} {persona.nombres}"):
+        return ANT_IDENTITY_MISMATCH
+    if not (datos.identificacion and datos.nombres and datos.resultado):
+        return ANT_RESULT_AMBIGUOUS
+    return ""
+
+
+def _analizar_certificado(*, verificacion, consulta, documento, texto: str, contenido: bytes, actor) -> None:
+    """PDF_RECIBIDO -> (DATOS_COINCIDENTES -> AUTENTICIDAD_PENDIENTE) o REQUIERE_REVISION."""
+    maquina_estados.transicionar(
+        verificacion=verificacion,
+        nuevo_estado=EstadoVerificacion.PDF_RECIBIDO,
+        actor=actor,
+        nota_bitacora="Certificado PDF recibido.",
+        cargado_por=actor,
+        proveedor=ProveedorAntecedentes(consulta.proveedor).label,
+    )
+    cambiar_estado_consulta(consulta=consulta, nuevo_estado=EstadoConsulta.COMPLETADA)
+
+    datos = certificado.analizar_texto(texto)
+    codigo = _codigo_de_identidad(datos, verificacion.persona)
+    firma = pdf.tiene_firma(contenido)
+    documento.identificacion_extraida = datos.identificacion[:50]
+    documento.nombre_extraido = datos.nombres[:255]
+    documento.numero_certificado = datos.numero_certificado[:100]
+    documento.resultado_extraido = datos.resultado or ""
+    documento.fecha_emision = datos.fecha_emision
+    documento.vigente_hasta_extraida = datos.vigente_hasta
+    documento.firma_detectada = firma
+    documento.codigo_error = codigo
+    firma_texto = (
+        f"Marca «Documento firmado electrónicamente» en el texto: {'sí' if datos.marca_firma else 'no'}. "
+        f"Diccionario de firma en el PDF: {'sí' if firma else 'no'}. "
+        "La validación criptográfica de la firma está pendiente."
+    )
+
+    if not codigo:
+        documento.estado_validacion = "DATOS_COINCIDENTES"
+        documento.detalle_validacion = f"La identidad del certificado coincide con la persona consultada. {firma_texto}"
+        maquina_estados.transicionar(
+            verificacion=verificacion,
+            nuevo_estado=EstadoVerificacion.DATOS_COINCIDENTES,
+            actor=actor,
+            nota_bitacora="La identidad del certificado coincide con la persona consultada.",
+            resultado=datos.resultado,
+            numero_certificado=datos.numero_certificado[:100],
+            fecha_resultado=_fecha_resultado(datos.fecha_emision),
+        )
+        maquina_estados.transicionar(
+            verificacion=verificacion,
+            nuevo_estado=EstadoVerificacion.AUTENTICIDAD_PENDIENTE,
+            actor=actor,
+            nota_bitacora="Pendiente de verificar la autenticidad del certificado.",
+        )
+        return
+
+    documento.estado_validacion = "REQUIERE_REVISION"
+    if codigo == ANT_IDENTITY_MISMATCH:
+        documento.detalle_validacion = (
+            "La identidad del certificado no coincide con la de la persona consultada; aceptación bloqueada. "
+            f"Se conserva el original y el caso se escala a revisión. {firma_texto}"
+        )
+        nota = f"El certificado no coincide con la identidad esperada ({codigo}); requiere revisión."
+    else:
+        campos = (("identificación", datos.identificacion), ("nombres", datos.nombres), ("resultado", datos.resultado))
+        faltantes = ", ".join(nombre for nombre, valor in campos if not valor)
+        documento.detalle_validacion = (
+            f"No se pudo reconocer con certeza en el certificado: {faltantes}. "
+            f"Requiere revisión humana. {firma_texto}"
+        )
+        nota = f"No se reconoció el resultado o la identidad del certificado ({codigo}); requiere revisión."
+    maquina_estados.transicionar(
+        verificacion=verificacion, nuevo_estado=EstadoVerificacion.REQUIERE_REVISION, actor=actor, nota_bitacora=nota
+    )
+
+
+def cargar_certificado(*, verificacion, archivo, actor) -> tuple[DocumentoAntecedentes, bool]:
+    """
+    Única entrada de un certificado PDF (S7). Devuelve (documento, creado).
+
+    Siempre conserva el original con su SHA-256 y audita la recepción. El mismo archivo (mismo SHA-256)
+    para la consulta devuelve el documento existente sin duplicar nada (doble clic o reintento). Un PDF
+    ilegible, cifrado, dañado o con contenido activo queda en cuarentena, el caso no cambia de estado y se
+    lanza DocumentoInvalido. Uno válido pasa a PDF_RECIBIDO y se lee: si la identidad coincide y se
+    reconoce el resultado queda en AUTENTICIDAD_PENDIENTE; si no, en REQUIERE_REVISION.
+    """
+    error = pdf.validar_entrada(archivo)
+    if error:
+        raise DocumentoInvalido(error)
+    archivo.seek(0)
+    contenido = archivo.read()
+    archivo.seek(0)
+    sha256 = hashlib.sha256(contenido).hexdigest()
+    consulta = verificacion.consultas_proveedor.filter(proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR).first()
+    if consulta is None:
+        raise DomainError("La verificación no tiene una consulta al Ministerio del Interior.")
+
+    motivo = None
+    with transaction.atomic():
+        bloqueada = (
+            VerificacionAntecedentes.objects.select_for_update().select_related("persona").get(pk=verificacion.pk)
+        )
+        existente = DocumentoAntecedentes.objects.filter(consulta=consulta, sha256=sha256).order_by("created_at").first()
+        if existente:
+            if existente.estado_validacion == CUARENTENA:
+                raise DocumentoInvalido(_motivo_de_cuarentena(existente), existente)
+            return existente, False
+        if bloqueada.estado not in maquina_estados.ESTADOS_CARGA_MANUAL:
+            raise DomainError(f"No se puede cargar un certificado con la verificación en estado '{bloqueada.estado}'.")
+
+        motivo = pdf.validar_estructura(contenido)
+        texto = ""
+        if not motivo:
+            texto, motivo = pdf.extraer_texto(contenido)
+        documento = _guardar_documento(consulta, archivo, contenido, sha256)
+        if motivo:
+            documento.estado_validacion = CUARENTENA
+            documento.codigo_error = ANT_DOCUMENT_INVALID
+            documento.detalle_validacion = motivo + _SUFIJO_CUARENTENA
+        else:
+            _analizar_certificado(
+                verificacion=bloqueada, consulta=consulta, documento=documento, texto=texto, contenido=contenido,
+                actor=actor,
+            )
+        documento.save()
+        emitir_evento(
+            actor=actor,
+            accion="DOCUMENTO_ANTECEDENTES_RECIBIDO",
+            recurso=documento,
+            organizacion=bloqueada.organizacion,
+            motivo="Certificado recibido y conservado con su huella SHA-256.",
+            metadata={
+                "sha256": sha256,
+                "tamano_bytes": len(contenido),
+                "estado_validacion": documento.estado_validacion,
+                "codigo_error": documento.codigo_error,
+            },
+        )
+    # La cuarentena ya está confirmada cuando se avisa del rechazo.
+    if motivo:
+        raise DocumentoInvalido(motivo, documento)
+    verificacion.refresh_from_db()
+    return documento, True
+
+
+def registrar_descarga(*, usuario, documento: DocumentoAntecedentes) -> None:
+    """ANT-011: toda lectura del original queda en la auditoría."""
+    emitir_evento(
+        actor=usuario,
+        accion="DESCARGAR_DOCUMENTO_ANTECEDENTES",
+        recurso=documento,
+        organizacion=documento.consulta.verificacion.organizacion,
+        metadata={"sha256": documento.sha256},
+    )
+
+
 @transaction.atomic
 def registrar_resultado_manual(*, verificacion, actor, resultado, numero_certificado="", proveedor="", comentario=""):
     if resultado not in ResultadoAntecedentes.values:
@@ -565,6 +766,12 @@ def registrar_resultado_manual(*, verificacion, actor, resultado, numero_certifi
     return verificacion
 
 
+def _certificado_de_otra_identidad(verificacion) -> bool:
+    """ANT-008: "Bloquear aceptación" cuando el último certificado cargado no es de la persona."""
+    ultimo = DocumentoAntecedentes.objects.filter(consulta__verificacion=verificacion).order_by("-created_at").first()
+    return bool(ultimo and ultimo.codigo_error == ANT_IDENTITY_MISMATCH)
+
+
 @transaction.atomic
 def validar_verificacion(*, verificacion, revisor, decision: str, comentario="", vigente_hasta=None):
     # Cuatro ojos (ANT-013): decide un revisor y nunca quien cargó la evidencia. Siempre activo.
@@ -579,6 +786,11 @@ def validar_verificacion(*, verificacion, revisor, decision: str, comentario="",
         raise DomainError(f"La verificación en estado '{verificacion.estado}' no espera una decisión de revisión.")
     if decision == EstadoVerificacion.VALIDADA and not vigente_hasta:
         raise DomainError("Toda validación debe indicar hasta cuándo es vigente el resultado.")
+    if decision == EstadoVerificacion.VALIDADA and _certificado_de_otra_identidad(verificacion):
+        raise DomainError(
+            "El certificado no coincide con la identidad de la persona: no se puede validar. "
+            "Devuelve el caso para una nueva carga o anúlalo."
+        )
     if decision != EstadoVerificacion.VALIDADA and not comentario.strip():
         raise DomainError("Devolver o anular una verificación requiere un comentario con el motivo.")
 

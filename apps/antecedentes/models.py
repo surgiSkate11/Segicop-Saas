@@ -1,5 +1,8 @@
+import os
 import uuid
 
+from django.conf import settings
+from django.core.files.storage import FileSystemStorage
 from django.db import models
 
 from apps.core.models import BaseModel, OrganizacionScopedModel
@@ -243,11 +246,30 @@ class IntentoConsulta(BaseModel):
         ordering = ["-created_at"]
 
 
+class AlmacenPrivado(FileSystemStorage):
+    """
+    S7: los certificados nunca se sirven desde /media/. Viven bajo ANTECEDENTES_PRIVATE_ROOT, sin URL
+    pública, y solo se leen con la vista de descarga autenticada. La raíz se lee en cada uso (pruebas).
+    """
+
+    @property
+    def base_location(self):
+        return str(settings.ANTECEDENTES_PRIVATE_ROOT)
+
+    @property
+    def location(self):
+        return os.path.abspath(self.base_location)
+
+    @property
+    def base_url(self):
+        return None
+
+
 class DocumentoAntecedentes(BaseModel):
     """Documento en almacenamiento privado, pendiente o aprobado por validación."""
 
     consulta = models.ForeignKey(ConsultaProveedor, on_delete=models.CASCADE, related_name="documentos")
-    archivo = models.FileField(upload_to="antecedentes/staging/%Y/%m/")
+    archivo = models.FileField(upload_to="%Y/%m/", storage=AlmacenPrivado())
     nombre_original = models.CharField(max_length=255, blank=True)
     mime_type = models.CharField(max_length=100, blank=True)
     tamano_bytes = models.PositiveBigIntegerField(default=0)
@@ -256,6 +278,11 @@ class DocumentoAntecedentes(BaseModel):
     identificacion_extraida = models.CharField(max_length=50, blank=True)
     nombre_extraido = models.CharField(max_length=255, blank=True)
     numero_certificado = models.CharField(max_length=100, blank=True)
+    resultado_extraido = models.CharField(max_length=20, blank=True)
+    fecha_emision = models.DateField(null=True, blank=True)
+    vigente_hasta_extraida = models.DateField(null=True, blank=True)
+    firma_detectada = models.BooleanField(default=False)  # diccionario de firma presente; no verificado (T9)
+    codigo_error = models.CharField(max_length=80, blank=True)
     detalle_validacion = models.TextField(blank=True)
     validado_por = models.ForeignKey(
         "identidad.Usuario", on_delete=models.PROTECT, null=True, blank=True, related_name="+"

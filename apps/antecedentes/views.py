@@ -1,5 +1,8 @@
+import os
+
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -8,7 +11,13 @@ from django.views.generic import ListView
 
 from apps.antecedentes import maquina_estados, permisos, services
 from apps.antecedentes.forms import AutorizacionDatosForm, RegistrarResultadoManualForm, ValidarVerificacionForm
-from apps.antecedentes.models import EstadoVerificacion, FinalidadConsulta, ModoConector, VerificacionAntecedentes
+from apps.antecedentes.models import (
+    DocumentoAntecedentes,
+    EstadoVerificacion,
+    FinalidadConsulta,
+    ModoConector,
+    VerificacionAntecedentes,
+)
 from apps.core.exceptions import DomainError
 from apps.core.modals import exito_htmx, render_modal
 from apps.personas.models import Persona
@@ -200,3 +209,26 @@ class AutorizarVerificacionModalView(permisos.OperadorRequeridoMixin, View):
         return exito_htmx(
             request, mensaje="Autorización registrada.", url=reverse("antecedentes:detalle", args=[verificacion.pk])
         )
+
+
+class DescargarDocumentoView(LoginRequiredMixin, View):
+    """ANT-011 / S7: el original solo lo lee, autenticado y auditado, un revisor de la organización."""
+
+    def get(self, request, pk):
+        # Sin rol en la organización el documento no existe (404); el operador recibe 403.
+        documento = get_object_or_404(
+            DocumentoAntecedentes.objects.select_related("consulta__verificacion"),
+            pk=pk,
+            consulta__verificacion__organizacion_id__in=permisos.organizaciones_operables(request.user),
+        )
+        permisos.exigir_revisar(request.user, documento.consulta.verificacion.organizacion_id)
+        try:
+            archivo = documento.archivo.open("rb")
+        except (ValueError, OSError):
+            raise Http404("El archivo no está disponible.")
+        services.registrar_descarga(usuario=request.user, documento=documento)
+        nombre = os.path.basename(documento.nombre_original) or f"certificado-{documento.pk}.pdf"
+        respuesta = FileResponse(archivo, as_attachment=True, filename=nombre, content_type="application/pdf")
+        respuesta["X-Content-Type-Options"] = "nosniff"
+        respuesta["Cache-Control"] = "private, no-store"
+        return respuesta
