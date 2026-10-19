@@ -11,6 +11,7 @@ from apps.core.exceptions import DomainError
 from apps.core.models import AlertaNotificacion, EventoAuditoria
 from apps.empresas.models import EmpresaContratista
 from apps.empresas.services import actualizar_empresa, crear_empresa
+from apps.identidad.services import enviar_acceso
 from apps.identidad.models import Organizacion, Rol, RolAsignado, TipoCuenta, Usuario
 
 RUC = "1790012345001"
@@ -318,3 +319,49 @@ class EnviarAccesoEmpresaTests(TestCase):
         respuesta = self.client.get(self.url)
 
         self.assertRedirects(respuesta, reverse("empresas:lista"))
+
+
+class CuentaCompartidaTests(TestCase):
+    """Verificación T5: una cuenta compartida entre organizaciones no la controla ninguna de ellas sola."""
+
+    def setUp(self):
+        self.org_victima = Organizacion.objects.create(nombre="Minera del Sur")
+        self.org_otra = Organizacion.objects.create(nombre="Petrolera Norte")
+        self.actor = preparar_staff(self.org_victima)
+        self.original = crear_empresa(
+            organizacion=self.org_victima, razon_social="Constructora Andina", ruc=RUC, actor=self.actor,
+            contacto_email="gerencia@andina.com",
+        )
+        self.original.usuario.set_password(CLAVE)
+        self.original.usuario.save()
+        self.ajena = crear_empresa(
+            organizacion=self.org_otra, razon_social="Constructora Andina", ruc=RUC, actor=self.actor,
+            contacto_email="atacante@evil.com",
+        )
+
+    def test_reenviar_desde_otra_organizacion_no_cambia_el_correo_de_la_cuenta(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            enviar_acceso(titular=self.ajena, actor=self.actor)
+
+        usuario = Usuario.objects.get(nombre_usuario=RUC)
+        self.assertEqual(usuario.email, "gerencia@andina.com")
+        self.assertEqual(mail.outbox[-1].to, ["gerencia@andina.com"])
+        self.assertTrue(usuario.check_password(CLAVE))
+
+    def test_modal_de_reenvio_no_revela_el_correo_de_la_cuenta_compartida(self):
+        staff_otra = preparar_staff(self.org_otra, email="admin@petrolera.com")
+        self.client.force_login(staff_otra)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.post(reverse("empresas:enviar_acceso", args=[self.ajena.pk]), **HTMX)
+        respuesta = self.client.get(reverse("empresas:lista"))
+
+        self.assertNotContains(respuesta, "gerencia@andina.com")
+        self.assertContains(respuesta, "Enlace de acceso enviado al correo registrado de la cuenta.")
+
+    def test_editar_razon_social_de_titular_con_cuenta_compartida_esta_permitido(self):
+        actualizar_empresa(empresa=self.ajena, actor=self.actor, razon_social="Andina Norte", ruc=RUC)
+
+        self.ajena.refresh_from_db()
+        self.assertEqual(self.ajena.razon_social, "Andina Norte")
+        self.assertEqual(Usuario.objects.get(nombre_usuario=RUC).nombre_completo, "Constructora Andina")

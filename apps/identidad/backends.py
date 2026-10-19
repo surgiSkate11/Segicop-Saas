@@ -17,14 +17,18 @@ class NombreUsuarioOCorreoBackend(ModelBackend):
             return None
 
         identificador = username.strip()
-        usuario = Usuario.objects.filter(nombre_usuario=identificador).first()
-        if usuario is None:
-            usuario = Usuario.objects.filter(email=identificador).first()
-        if usuario is None:
+        # Se prueban ambos: un documento con forma de correo no debe tapar la
+        # cuenta interna que usa ese correo.
+        candidatos = [
+            *Usuario.objects.filter(nombre_usuario=identificador),
+            *Usuario.objects.filter(email=identificador),
+        ]
+        if not candidatos:
             # Mismo costo que con un usuario existente: no revela si existe.
             Usuario().set_password(password)
             return None
 
-        if usuario.check_password(password) and self.user_can_authenticate(usuario):
-            return usuario
+        for usuario in candidatos:
+            if usuario.check_password(password) and self.user_can_authenticate(usuario):
+                return usuario
         return None

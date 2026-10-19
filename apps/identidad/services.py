@@ -125,6 +125,11 @@ def _programar_correo_acceso(*, usuario: Usuario, organizacion, actor, con_enlac
     transaction.on_commit(_enviar)
 
 
+def es_cuenta_compartida(titular) -> bool:
+    """La cuenta del titular está vinculada también a otro titular (otra organización)."""
+    return type(titular).objects.filter(usuario_id=titular.usuario_id).exclude(pk=titular.pk).exists()
+
+
 @transaction.atomic
 def provisionar_cuenta(*, titular, actor) -> Usuario:
     """
@@ -184,10 +189,12 @@ def provisionar_cuenta(*, titular, actor) -> Usuario:
 @transaction.atomic
 def enviar_acceso(*, titular, actor) -> Usuario:
     """
-    S9: (re)envía un enlace al correo de contacto ACTUAL del titular.
-    Sin cuenta todavía -> la crea. Con cuenta -> nuevo enlace (el anterior
-    sigue sirviendo hasta que se use uno, porque el token depende de la
-    contraseña). Si el correo de contacto cambió, la cuenta lo adopta.
+    S9: (re)envía un enlace de acceso. Sin cuenta todavía -> la crea. Con
+    cuenta -> nuevo enlace (el anterior sigue sirviendo hasta que se use
+    uno, porque el token depende de la contraseña). Si el correo de
+    contacto cambió, la cuenta lo adopta SOLO si no es compartida: una
+    organización no puede redirigir el acceso de una cuenta que también
+    usa otra (sería tomar la cuenta). Entonces va al correo registrado.
     """
     usuario = titular.usuario
     if usuario is None:
@@ -196,7 +203,7 @@ def enviar_acceso(*, titular, actor) -> Usuario:
     correo = Usuario.objects.normalize_email((titular.correo_cuenta or "").strip())
     if not correo:
         raise DomainError("Se necesita un correo de contacto para enviar el acceso.")
-    if correo.lower() != usuario.email.lower():
+    if correo.lower() != usuario.email.lower() and not es_cuenta_compartida(titular):
         if Usuario.objects.filter(email__iexact=correo).exclude(pk=usuario.pk).exists():
             raise DomainError(f"El correo {correo} ya está asociado a otra cuenta. Usa un correo distinto.")
         usuario.email = correo
@@ -220,10 +227,12 @@ def sincronizar_cuenta(*, titular, actor) -> None:
     if (usuario.nombre_usuario, usuario.nombre_completo) == (nombre_usuario, titular.nombre_cuenta):
         return
 
-    if type(titular).objects.filter(usuario=usuario).exclude(pk=titular.pk).exists():
-        raise DomainError(
-            "La cuenta de acceso se comparte con otra organización; no se puede cambiar su usuario desde aquí."
-        )
+    if es_cuenta_compartida(titular):
+        if usuario.nombre_usuario != nombre_usuario:
+            raise DomainError(
+                "La cuenta de acceso se comparte con otra organización; no se puede cambiar su usuario desde aquí."
+            )
+        return  # el nombre de una cuenta compartida no lo decide una sola organización
     if Usuario.objects.filter(nombre_usuario=nombre_usuario).exclude(pk=usuario.pk).exists():
         raise DomainError(f"Ya existe otra cuenta con el usuario {nombre_usuario}.")
 

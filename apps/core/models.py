@@ -107,3 +107,49 @@ class ExportacionAuditoria(BaseModel):
         verbose_name = "Exportación auditada"
         verbose_name_plural = "Exportaciones auditadas"
         ordering = ["-created_at"]
+
+
+class ConfiguracionCorreo(BaseModel):
+    """
+    S11: servidor SMTP y remitente de los correos del sistema, editable
+    desde el panel administrativo. Solo una puede estar activa; sin ninguna
+    activa se usan los settings (EMAIL_BACKEND, DEFAULT_FROM_EMAIL).
+    La clave SMTP se guarda en la BD: restringir el admin a superusuarios.
+    """
+
+    activa = models.BooleanField(default=False)
+    host = models.CharField("Servidor SMTP", max_length=255)
+    puerto = models.PositiveIntegerField(default=587)
+    usuario = models.CharField("Usuario SMTP", max_length=255, blank=True)
+    password = models.CharField("Clave SMTP", max_length=255, blank=True)
+    usar_tls = models.BooleanField("Usar TLS (STARTTLS)", default=True)
+    usar_ssl = models.BooleanField("Usar SSL", default=False)
+    timeout = models.PositiveIntegerField("Tiempo de espera (s)", default=10)
+    remitente_nombre = models.CharField("Nombre del remitente", max_length=120, default="SIGECOP")
+    remitente_email = models.EmailField("Correo del remitente")
+
+    class Meta:
+        verbose_name = "Configuración de correo"
+        verbose_name_plural = "Configuración de correo"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["activa"], condition=models.Q(activa=True), name="una_configuracion_correo_activa"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.remitente_email} vía {self.host}:{self.puerto}{' (activa)' if self.activa else ''}"
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.usar_tls and self.usar_ssl:
+            raise ValidationError("Usa TLS o SSL, no ambos.")
+
+    @property
+    def remitente(self) -> str:
+        return f"{self.remitente_nombre} <{self.remitente_email}>" if self.remitente_nombre else self.remitente_email
+
+    @classmethod
+    def vigente(cls):
+        return cls.objects.filter(activa=True).first()
