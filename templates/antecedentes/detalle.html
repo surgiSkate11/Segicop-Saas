@@ -12,7 +12,31 @@
   <p class="sc-subtitulo">
     Estado: <span class="sc-estado sc-estado--{{ verificacion.estado|lower }}">{{ verificacion.get_estado_display }}</span>
     · Modo: {{ verificacion.get_modo_conector_display }}
+    · Finalidad: {{ verificacion.get_finalidad_display }}
   </p>
+
+  {% if espera_autorizacion %}
+    <div class="sc-banner">
+      <div class="sc-banner__icono">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 4 7v6c0 5 4 7.5 8 8 4-.5 8-3 8-8V7z"/></svg>
+      </div>
+      <div>
+        <p class="sc-banner__titulo">Autorización pendiente</p>
+        <p class="sc-banner__detalle">No se consulta nada hasta registrar la autorización de la persona para: {{ verificacion.get_finalidad_display }}.</p>
+      </div>
+      <button type="button" class="sc-boton-primario"
+              hx-get="{% url 'antecedentes:autorizar' verificacion.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
+        Registrar autorización
+      </button>
+    </div>
+  {% elif autorizacion %}
+    <p class="sc-texto-muted" style="margin-bottom: 24px;">
+      Autorización: {{ autorizacion.get_medio_display }} · versión {{ autorizacion.version }}
+      · otorgada el {{ autorizacion.otorgada_en|date:"d/m/Y" }}
+      {% if autorizacion.referencia_evidencia %}· evidencia: {{ autorizacion.referencia_evidencia }}{% endif %}
+      {% if autorizacion.revocada_en %}· <strong>revocada el {{ autorizacion.revocada_en|date:"d/m/Y" }}: {{ autorizacion.motivo_revocacion }}</strong>{% endif %}
+    </p>
+  {% endif %}
 
   {% if puede_cargar %}
     <div class="sc-banner">

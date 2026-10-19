@@ -15,6 +15,7 @@ from apps.antecedentes.models import (
     ConsultaProveedor,
     DocumentoAntecedentes,
     EstadoConsulta,
+    FinalidadConsulta,
     VerificacionAntecedentes,
 )
 from apps.antecedentes.serializers import VerificacionAntecedentesSerializer
@@ -69,12 +70,17 @@ class IniciarVerificacionAPIView(APIView):
             organizacion_id__in=organizaciones_del_usuario(request.user),
         )
         try:
-            verificacion = iniciar_verificacion(persona=persona, actor=request.user)
+            verificacion, creada = iniciar_verificacion(
+                persona=persona,
+                actor=request.user,
+                finalidad=request.data.get("finalidad") or FinalidadConsulta.HABILITACION_INGRESO,
+                clave_idempotencia=str(request.data.get("clave_idempotencia") or ""),
+            )
         except DomainError as error:
             return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(
             VerificacionAntecedentesSerializer(verificacion).data,
-            status=status.HTTP_202_ACCEPTED,
+            status=status.HTTP_202_ACCEPTED if creada else status.HTTP_200_OK,
         )
 
 

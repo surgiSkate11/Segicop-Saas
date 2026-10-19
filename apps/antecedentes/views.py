@@ -7,9 +7,10 @@ from django.views.generic import ListView
 
 from apps.antecedentes import maquina_estados, services
 from apps.antecedentes.alcance import organizaciones_del_usuario
-from apps.antecedentes.forms import RegistrarResultadoManualForm, ValidarVerificacionForm
-from apps.antecedentes.models import VerificacionAntecedentes
+from apps.antecedentes.forms import AutorizacionDatosForm, RegistrarResultadoManualForm, ValidarVerificacionForm
+from apps.antecedentes.models import EstadoVerificacion, FinalidadConsulta, VerificacionAntecedentes
 from apps.core.exceptions import DomainError
+from apps.core.modals import exito_htmx, render_modal
 from apps.personas.models import Persona
 
 
@@ -36,11 +37,16 @@ class IniciarVerificacionView(LoginRequiredMixin, View):
         organizaciones_ids = organizaciones_del_usuario(request.user)
         persona = get_object_or_404(Persona, pk=persona_pk, organizacion_id__in=organizaciones_ids)
         try:
-            verificacion = services.iniciar_verificacion(persona=persona, actor=request.user)
+            verificacion, creada = services.iniciar_verificacion(
+                persona=persona, actor=request.user, finalidad=FinalidadConsulta.HABILITACION_INGRESO
+            )
         except DomainError as error:
             messages.error(request, str(error))
             return redirect(reverse("personas:lista"))
-        messages.success(request, "Verificación de antecedentes iniciada.")
+        if creada:
+            messages.success(request, "Verificación de antecedentes iniciada.")
+        else:
+            messages.success(request, "Ya existía una solicitud activa para esta persona; se muestra esa.")
         return redirect(reverse("antecedentes:detalle", args=[verificacion.pk]))
 
 
@@ -50,7 +56,10 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
     def _get_verificacion(self, pk):
         organizaciones_ids = organizaciones_del_usuario(self.request.user)
         return get_object_or_404(
-            VerificacionAntecedentes.objects.select_related("persona"), pk=pk, organizacion_id__in=organizaciones_ids
+            VerificacionAntecedentes.objects.select_related("persona", "autorizacion"),
+            pk=pk,
+            organizacion_id__in=organizaciones_ids,
+        
         )
 
     def get(self, request, pk):
@@ -58,6 +67,8 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
         contexto = {
             "verificacion": verificacion,
             "ejecuciones": verificacion.ejecuciones.all(),
+            "autorizacion": verificacion.autorizacion,
+            "espera_autorizacion": verificacion.estado == EstadoVerificacion.AUTORIZACION_PENDIENTE,
             "puede_cargar": verificacion.estado in maquina_estados.ESTADOS_CARGA_MANUAL,
             "puede_decidir": verificacion.estado in maquina_estados.ESTADOS_DECISION,
             "form_resultado": RegistrarResultadoManualForm(),
@@ -107,3 +118,55 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
             vigente_hasta=form.cleaned_data["vigente_hasta"],
         )
         messages.success(request, "Decisión registrada.")
+
+
+class AutorizarVerificacionModalView(LoginRequiredMixin, View):
+    """Modal HTMX para registrar la autorización de la persona de una verificación pendiente."""
+
+    def dispatch(self, request, *args, **kwargs):
+        if not request.htmx:
+            return redirect(reverse("antecedentes:detalle", args=[kwargs["pk"]]))
+        return super().dispatch(request, *args, **kwargs)
+
+    def _get_verificacion(self, request, pk):
+        return get_object_or_404(
+            VerificacionAntecedentes.objects.select_related("persona"),
+            pk=pk,
+            organizacion_id__in=organizaciones_del_usuario(request.user),
+        )
+
+    def _modal(self, request, form, verificacion):
+        return render_modal(
+            request,
+            form=form,
+            titulo=f"Autorización · {verificacion.persona.nombre_completo}",
+            accion_url=reverse("antecedentes:autorizar", args=[verificacion.pk]),
+            boton="Registrar autorización",
+        )
+
+    def get(self, request, pk):
+        verificacion = self._get_verificacion(request, pk)
+        form = AutorizacionDatosForm(finalidad_label=verificacion.get_finalidad_display())
+        return self._modal(request, form, verificacion)
+
+    def post(self, request, pk):
+        verificacion = self._get_verificacion(request, pk)
+        form = AutorizacionDatosForm(request.POST, finalidad_label=verificacion.get_finalidad_display())
+        if not form.is_valid():
+            return self._modal(request, form, verificacion)
+        if verificacion.estado != EstadoVerificacion.AUTORIZACION_PENDIENTE:
+            form.add_error(None, "Esta verificación ya no espera una autorización.")
+            return self._modal(request, form, verificacion)
+        try:
+            services.registrar_autorizacion(
+                persona=verificacion.persona,
+                finalidad=verificacion.finalidad,
+                actor=request.user,
+                **form.cleaned_data,
+            )
+        except DomainError as error:
+            form.add_error(None, str(error))
+            return self._modal(request, form, verificacion)
+        return exito_htmx(
+            request, mensaje="Autorización registrada.", url=reverse("antecedentes:detalle", args=[verificacion.pk])
+        )

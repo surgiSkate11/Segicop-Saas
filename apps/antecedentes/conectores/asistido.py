@@ -4,13 +4,9 @@ from apps.antecedentes.models import EstadoVerificacion
 
 
 class ConectorAsistido(ConectorAntecedentes):
+    """Arranca desde LISTA: la autorización de la persona ya está registrada."""
+
     def iniciar(self, verificacion, actor=None) -> ResultadoConector:
-        maquina_estados.transicionar(
-            verificacion=verificacion,
-            nuevo_estado=EstadoVerificacion.LISTA,
-            actor=actor,
-            nota_bitacora="Verificación asistida lista para consultar el portal oficial.",
-        )
         maquina_estados.transicionar(
             verificacion=verificacion,
             nuevo_estado=EstadoVerificacion.EN_CONSULTA,
