@@ -13,10 +13,12 @@ class EjecucionConectorInline(admin.TabularInline):
 
 @admin.register(VerificacionAntecedentes)
 class VerificacionAntecedentesAdmin(admin.ModelAdmin):
-    list_display = ("persona", "finalidad", "estado", "modo_conector", "resultado", "vigente_hasta")
+    list_display = ("persona", "finalidad", "estado", "modo_conector", "vigente_hasta")
     list_filter = ("organizacion", "estado", "finalidad", "modo_conector")
     search_fields = ("persona__nombres", "persona__apellidos")
     inlines = [EjecucionConectorInline]
+    # Mínimo privilegio (S8): el administrador de plataforma no lee resultados ni certificados.
+    exclude = ("resultado", "numero_certificado", "comentario", "fecha_resultado")
 
     def has_change_permission(self, request, obj=None):
         return False
