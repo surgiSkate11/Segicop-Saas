@@ -1,0 +1,17 @@
+{% autoescape off %}Hola, {{ usuario.nombre_completo }}:
+
+{% if enlace %}{{ organizacion.nombre }} te dio acceso a SIGECOP, el sistema de gestión de contratistas y permisos.
+
+Tu usuario es: {{ usuario.nombre_usuario }}
+
+Para activar tu cuenta, define tu contraseña en este enlace:
+{{ enlace }}
+
+El enlace sirve una sola vez y vence en {{ horas_vigencia }} horas. Si vence, pide a {{ organizacion.nombre }} que te lo reenvíe.
+{% else %}{{ organizacion.nombre }} te dio acceso a SIGECOP con tu cuenta existente.
+
+Ingresa con tu usuario {{ usuario.nombre_usuario }} y tu contraseña de siempre:
+{{ url_login }}
+{% endif %}
+Nadie de SIGECOP te pedirá tu contraseña. Si no esperabas este correo, ignóralo.
+{% endautoescape %}

@@ -1,7 +1,9 @@
-from django.contrib.auth.forms import AuthenticationForm
+from django.contrib.auth.forms import AuthenticationForm, SetPasswordForm
 from django.core.exceptions import ValidationError
-from django.forms import CharField, EmailField, PasswordInput, TextInput
+from django.forms import CharField, PasswordInput, TextInput
 from django_otp.plugins.otp_totp.models import TOTPDevice
+
+from apps.core.forms import EstiloFormMixin
 
 
 class LoginForm(AuthenticationForm):
@@ -11,9 +13,11 @@ class LoginForm(AuthenticationForm):
     "sueltos" en el template de login.
     """
 
-    username = EmailField(
-        label="Correo electrónico",
-        widget=TextInput(attrs={"class": "sc-input", "autofocus": True}),
+    # S3: RUC/cédula para cuentas de portal, correo para el personal interno.
+    username = CharField(
+        label="Usuario (RUC, cédula o correo)",
+        max_length=254,
+        widget=TextInput(attrs={"class": "sc-input", "autofocus": True, "autocomplete": "username"}),
     )
     password = CharField(
         label="Contraseña",
@@ -41,3 +45,24 @@ class LoginForm(AuthenticationForm):
         if not dispositivo.verify_token(token):
             raise ValidationError("El código MFA no es válido.")
         return datos
+
+
+class DefinirPasswordForm(EstiloFormMixin, SetPasswordForm):
+    """SetPasswordForm de Django (aplica AUTH_PASSWORD_VALIDATORS) con el estilo del layout."""
+
+
+class CorreoAccesoFormMixin:
+    """
+    S12: al CREAR un titular con cuenta de portal (empresa, persona) el
+    correo de contacto es obligatorio: ahí llega su enlace de acceso.
+    Al editar sigue siendo opcional, como antes.
+    """
+
+    campo_correo_acceso = "contacto_email"
+
+    def __init__(self, *args, creando=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        if creando:
+            campo = self.fields[self.campo_correo_acceso]
+            campo.required = True
+            campo.help_text = "Aquí llegará el enlace para activar el acceso."

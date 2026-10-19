@@ -1,0 +1,39 @@
+{# Modal de (re)envío del enlace de acceso. Contexto: titular, cuenta, error, accion_url #}
+<div class="sc-modal-fondo">
+  <div class="sc-modal-caja" role="dialog" aria-modal="true" aria-label="Enviar acceso">
+    <div class="sc-modal-cabecera">
+      <span class="sc-modal-titulo">Enviar acceso · {{ titular.nombre_cuenta }}</span>
+      <button type="button" class="sc-modal-cerrar" aria-label="Cerrar"
+              onclick="document.getElementById('sc-modal').innerHTML=''">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+
+    <form hx-post="{{ accion_url }}" hx-target="#sc-modal" hx-swap="innerHTML">
+      <div class="sc-modal-cuerpo">
+        {% if error %}<ul class="sc-errores"><li>{{ error }}</li></ul>{% endif %}
+        <div class="sc-campo">
+          <label>Usuario</label>
+          <p class="sc-dato-mono">{{ titular.nombre_usuario_cuenta }}</p>
+        </div>
+        <div class="sc-campo">
+          <label>Se enviará a</label>
+          <p>{{ titular.correo_cuenta|default:"Sin correo de contacto: edita el registro y agrégalo." }}</p>
+        </div>
+        <div class="sc-campo">
+          <label>Estado del acceso</label>
+          <p>{% include "identidad/_estado_acceso.html" with cuenta=cuenta %}</p>
+        </div>
+        <p class="text-sm opacity-80">
+          Llegará un enlace de un solo uso, válido 72 horas, para definir la contraseña.
+          {% if cuenta.cuenta_activada_at %}La contraseña actual sigue sirviendo hasta que se use el enlace.{% endif %}
+        </p>
+      </div>
+      <div class="sc-modal-pie">
+        <button type="button" class="sc-boton-secundario"
+                onclick="document.getElementById('sc-modal').innerHTML=''">Cancelar</button>
+        <button type="submit" class="sc-boton-primario">Enviar enlace</button>
+      </div>
+    </form>
+  </div>
+</div>

@@ -1,0 +1,56 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="es" class="h-full" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Activar cuenta · SIGECOP</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'css/tailwind.css' %}">
+  <script>
+    document.documentElement.dataset.theme = localStorage.getItem("sigecop-theme") || "light";
+  </script>
+</head>
+<body class="sc-login-page h-full min-h-screen antialiased">
+  <div class="sc-login-page__marca" aria-hidden="true">
+    <div class="sc-marca__icono">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 2 3 6v6c0 5.2 3.8 9.4 9 10 5.2-.6 9-4.8 9-10V6z"/><path d="m9 12 2 2 4-4"/></svg>
+    </div>
+    <span>SIGECOP</span>
+  </div>
+  <div class="sc-login">
+    <div class="sc-login__logo">
+      <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+    </div>
+
+    {% if validlink %}
+      <h1>Activa tu cuenta</h1>
+      <p class="sc-subtitulo">Tu usuario es <strong class="sc-dato-mono">{{ form.user.nombre_usuario|default:form.user.email }}</strong>. Define tu contraseña para ingresar.</p>
+
+      {% if form.non_field_errors %}
+        <ul class="sc-errores">{% for error in form.non_field_errors %}<li>{{ error }}</li>{% endfor %}</ul>
+      {% endif %}
+
+      <form method="post">
+        {% csrf_token %}
+        {% for field in form %}
+          <div class="sc-campo">
+            <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+            {{ field }}
+            {% if field.errors %}<ul class="sc-errores">{% for error in field.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            {% if field.help_text %}<div class="text-xs mt-1 opacity-70">{{ field.help_text|safe }}</div>{% endif %}
+          </div>
+        {% endfor %}
+        <button type="submit" class="sc-boton">Definir contraseña</button>
+      </form>
+    {% else %}
+      <h1>Enlace no disponible</h1>
+      <p class="sc-subtitulo">El enlace no es válido o ya venció. Cada enlace sirve una sola vez y dura 72 horas.</p>
+      <p class="text-sm text-center">Pide a la organización que te dio acceso que te reenvíe el enlace.</p>
+      <p class="text-center mt-6"><a href="{% url 'identidad:login' %}" class="sc-boton-secundario">Ir a ingresar</a></p>
+    {% endif %}
+  </div>
+</body>
+</html>
