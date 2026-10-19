@@ -1,8 +1,3 @@
-import hashlib
-import re
-import uuid
-
-from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -11,52 +6,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.antecedentes import permisos
-from apps.antecedentes.models import (
-    ConsultaProveedor,
-    DocumentoAntecedentes,
-    EstadoConsulta,
-    FinalidadConsulta,
-)
+from apps.antecedentes.models import ConsultaProveedor, FinalidadConsulta
+from apps.antecedentes.pdf import DocumentoInvalido
 from apps.antecedentes.serializers import serializador_verificacion
-from apps.antecedentes.services import cambiar_estado_consulta, iniciar_verificacion, registrar_lectura
+from apps.antecedentes.services import cargar_certificado, iniciar_verificacion, registrar_lectura
 from apps.core.exceptions import DomainError
 from apps.personas.models import Persona
-
-
-MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
-_PDF_ACTIVE_CONTENT = re.compile(
-    rb"/(?:JavaScript|JS|Launch|EmbeddedFile|RichMedia|SubmitForm|GoToR|OpenAction)\b",
-    re.IGNORECASE,
-)
-
-
-def _validar_pdf_seguro(archivo):
-    """Valida un PDF sin interpretarlo ni ejecutar contenido activo."""
-    nombre = str(archivo.name or "")
-    if (
-        "\x00" in nombre
-        or any(ord(caracter) < 32 for caracter in nombre)
-        or not nombre.lower().endswith(".pdf")
-        or len(nombre) > 255
-    ):
-        return "El nombre del archivo no es válido."
-    if archivo.size <= 0 or archivo.size > MAX_DOCUMENT_BYTES:
-        return "El archivo debe tener entre 1 byte y 10 MB."
-
-    archivo.seek(0)
-    contenido = archivo.read()
-    archivo.seek(0)
-    if not contenido.startswith(b"%PDF-") or b"%%EOF" not in contenido[-2048:]:
-        return "El archivo no tiene una estructura PDF válida."
-    if b"/Encrypt" in contenido[:1_048_576]:
-        return "No se aceptan PDF cifrados."
-    if _PDF_ACTIVE_CONTENT.search(contenido):
-        return "El PDF contiene acciones o archivos incrustados no permitidos."
-    return None
-
-
-def _nombre_seguro_pdf():
-    return f"antecedente-{uuid.uuid4().hex}.pdf"
 
 
 class IniciarVerificacionAPIView(APIView):
@@ -103,31 +58,16 @@ class CargarDocumentoAPIView(APIView):
         archivo = request.FILES.get("archivo")
         if not archivo:
             return Response({"detail": "El campo archivo es obligatorio."}, status=status.HTTP_400_BAD_REQUEST)
-        error_validacion = _validar_pdf_seguro(archivo)
-        if error_validacion:
-            return Response({"detail": error_validacion}, status=status.HTTP_400_BAD_REQUEST)
-
-        digest = hashlib.sha256()
-        for bloque in archivo.chunks():
-            digest.update(bloque)
-        archivo.seek(0)
-        nombre_original = archivo.name
-        archivo.name = _nombre_seguro_pdf()
-        with transaction.atomic():
-            documento = DocumentoAntecedentes.objects.create(
-                consulta=consulta,
-                archivo=archivo,
-                nombre_original=nombre_original,
-                mime_type="application/pdf",
-                tamano_bytes=archivo.size,
-                sha256=digest.hexdigest(),
-                estado_validacion="PENDIENTE",
-                detalle_validacion=(
-                    "PDF recibido y pendiente de validación de identidad, contenido y autenticidad."
-                ),
+        try:
+            documento, creado = cargar_certificado(
+                verificacion=consulta.verificacion, archivo=archivo, actor=request.user
             )
-            cambiar_estado_consulta(consulta=consulta, nuevo_estado=EstadoConsulta.COMPLETADA)
+        except DocumentoInvalido as error:
+            # El PDF queda en cuarentena (si llegó a guardarse); el caso sigue como estaba.
+            return Response({"code": error.codigo, "detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
+        except DomainError as error:
+            return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(
             {"documento_id": str(documento.pk), "estado": documento.estado_validacion},
-            status=status.HTTP_201_CREATED,
+            status=status.HTTP_201_CREATED if creado else status.HTTP_200_OK,
         )

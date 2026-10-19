@@ -129,6 +129,8 @@ STATICFILES_DIRS = [BASE_DIR / "static"]
 
 MEDIA_URL = "media/"
 MEDIA_ROOT = BASE_DIR / "media"
+# Certificados de antecedentes (S7): fuera de MEDIA_ROOT, nunca servidos como archivos públicos.
+ANTECEDENTES_PRIVATE_ROOT = BASE_DIR / "privado" / "antecedentes"
 
 CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default="redis://localhost:6379/1")

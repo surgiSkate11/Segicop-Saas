@@ -19,6 +19,11 @@ class DocumentoRevisorSerializer(DocumentoAntecedentesSerializer):
             "identificacion_extraida",
             "nombre_extraido",
             "numero_certificado",
+            "resultado_extraido",
+            "fecha_emision",
+            "vigente_hasta_extraida",
+            "firma_detectada",
+            "codigo_error",
             "detalle_validacion",
         )
 
