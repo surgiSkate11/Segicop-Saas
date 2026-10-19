@@ -45,7 +45,11 @@ def calcular_habilitacion(persona: Persona) -> ResultadoHabilitacion:
 
     hoy = timezone.now().date()
     verificacion = (
-        persona.verificaciones_antecedentes.filter(estado=EstadoVerificacion.VALIDADA).order_by("-created_at").first()
+        # Una autorización revocada deja de habilitar: la verificación se conserva, pero ya no se usa.
+        persona.verificaciones_antecedentes.filter(estado=EstadoVerificacion.VALIDADA)
+        .exclude(autorizacion__revocada_en__isnull=False)
+        .order_by("-created_at")
+        .first()
     )
     if (
         not verificacion

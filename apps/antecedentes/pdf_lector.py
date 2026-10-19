@@ -23,7 +23,6 @@ NOMBRES_ACTIVOS = frozenset(
     {
         "/JavaScript",
         "/JS",
-        "/OpenAction",
         "/AA",
         "/Launch",
         "/EmbeddedFile",
@@ -57,8 +56,21 @@ def _objetos(lector):
             continue
 
 
+def open_action_inocua(valor) -> bool:
+    """
+    `/OpenAction` solo se acepta si muestra una página: un destino (`[página /FitH null]`, como trae el
+    certificado oficial del Ministerio) o una acción `/GoTo`. Cualquier otra acción al abrir se rechaza.
+    """
+    if isinstance(valor, ArrayObject):
+        return True
+    return isinstance(valor, DictionaryObject) and valor.get("/S") == "/GoTo"
+
+
 def tiene_contenido_activo(lector) -> bool:
-    """Busca los nombres de NOMBRES_ACTIVOS (ya sin escapes #xx) en cualquier objeto resuelto del documento."""
+    """
+    Busca los nombres de NOMBRES_ACTIVOS (ya sin escapes #xx) en cualquier objeto resuelto del documento,
+    y toda `/OpenAction` que haga algo más que mostrar una página.
+    """
     pendientes = [lector.trailer, *_objetos(lector)]
     vistos = set()
     while pendientes:
@@ -69,6 +81,8 @@ def tiene_contenido_activo(lector) -> bool:
         elif isinstance(objeto, (DictionaryObject, ArrayObject)) and id(objeto) not in vistos:
             vistos.add(id(objeto))
             if isinstance(objeto, DictionaryObject):
+                if "/OpenAction" in objeto and not open_action_inocua(objeto["/OpenAction"]):
+                    return True
                 pendientes.extend(objeto.keys())
                 pendientes.extend(objeto.values())
             else:

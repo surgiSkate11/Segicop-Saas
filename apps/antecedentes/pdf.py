@@ -23,9 +23,17 @@ MAX_BYTES_CONTENIDO_PAGINA = 512 * 1024  # contenido ya descomprimido de una pá
 PDF_TIMEOUT_POR_DEFECTO = 10  # segundos; ajuste ANTECEDENTES_PDF_TIMEOUT
 _SCRIPT_LECTOR = Path(__file__).with_name("pdf_lector.py")
 _PDF_ACTIVE_CONTENT = re.compile(
-    rb"/(?:JavaScript|JS|OpenAction|AA|Launch|EmbeddedFiles?|RichMedia|XFA|SubmitForm|ImportData|GoToR)\b",
+    rb"/(?:JavaScript|JS|AA|Launch|EmbeddedFiles?|RichMedia|XFA|SubmitForm|ImportData|GoToR)\b",
     re.IGNORECASE,
 )
+# `/OpenAction` aparte: el certificado oficial la usa para abrir en la página 1 (`[6 0 R /FitH null]`).
+# Pasa un destino (arreglo) o un diccionario `/S /GoTo`, directos o detrás de una referencia que se
+# encuentre en los bytes; cualquier otra forma, o una referencia que no se encuentra, se rechaza.
+_OPEN_ACTION = re.compile(
+    rb"/OpenAction\s*(\[|(\d+)\s+(\d+)\s+R\b|<<(.{0,512}?)>>)?", re.IGNORECASE | re.DOTALL
+)
+_ACCION_GOTO = re.compile(rb"/S\s*/GoTo\b")
+_OTRA_ACCION = re.compile(rb"/S\s*/(?!GoTo\b)")
 _NOMBRE_CON_ESCAPES = re.compile(rb"/[^\x00\s/<>\[\]()%{}]*#[^\x00\s/<>\[\]()%{}]*")
 _ESCAPE_HEX = re.compile(rb"#([0-9A-Fa-f]{2})")
 _FIRMA_PDF = re.compile(rb"/ByteRange\b|/Type\s*/Sig\b")
@@ -63,13 +71,38 @@ def _sin_escapes_en_nombres(contenido: bytes) -> bytes:
     )
 
 
+def _accion_goto(diccionario: bytes) -> bool:
+    return bool(_ACCION_GOTO.search(diccionario)) and not _OTRA_ACCION.search(diccionario)
+
+
+def _open_action_sospechosa(contenido: bytes) -> bool:
+    for accion in _OPEN_ACTION.finditer(contenido):
+        forma, numero, generacion, diccionario = accion.groups()
+        if forma is None:
+            return True
+        if diccionario is not None and not _accion_goto(diccionario):
+            return True
+        if numero is not None:
+            objeto = re.search(
+                rb"(?<!\d)%s\s+%s\s+obj\s*(\[|<<(.{0,512}?)>>\s*endobj)" % (numero, generacion), contenido, re.DOTALL
+            )
+            if objeto is None or (objeto.group(2) is not None and not _accion_goto(objeto.group(2))):
+                return True
+    return False
+
+
 def validar_estructura(contenido: bytes):
     """Valida un PDF sin interpretarlo ni ejecutar contenido activo."""
     if not contenido.startswith(b"%PDF-") or b"%%EOF" not in contenido[-2048:]:
         return "El archivo no tiene una estructura PDF válida."
     if b"/Encrypt" in contenido[:1_048_576]:
         return "No se aceptan PDF cifrados."
-    if _PDF_ACTIVE_CONTENT.search(contenido) or _PDF_ACTIVE_CONTENT.search(_sin_escapes_en_nombres(contenido)):
+    normalizado = _sin_escapes_en_nombres(contenido)
+    if (
+        _PDF_ACTIVE_CONTENT.search(contenido)
+        or _PDF_ACTIVE_CONTENT.search(normalizado)
+        or _open_action_sospechosa(normalizado)
+    ):
         return "El PDF contiene acciones o archivos incrustados no permitidos."
     return None
 

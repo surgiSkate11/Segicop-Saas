@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 
 from django.test import TestCase
+from django.utils import timezone
 
 from apps.accesos.models import EstadoPermiso, EventoAcceso, TipoEvento
 from apps.accesos.services import calcular_habilitacion, registrar_evento_acceso, solicitar_permiso_ingreso
@@ -82,6 +83,27 @@ class HabilitacionTests(TestCase):
         resultado = calcular_habilitacion(self.persona)
 
         self.assertEqual((resultado.habilitado, resultado.motivo), (False, self.MOTIVO_ANTECEDENTES))
+
+    def test_una_autorizacion_revocada_deja_de_habilitar_sin_borrar_la_verificacion(self):
+        from apps.antecedentes.models import AutorizacionDatos, MedioAutorizacion
+
+        autorizacion = AutorizacionDatos.objects.create(
+            organizacion=self.organizacion, persona=self.persona, finalidad="HABILITACION_INGRESO",
+            texto="Autorizo.", version="1.0", medio=MedioAutorizacion.PORTAL, otorgada_en=date.today(),
+            registrada_por=self.usuario,
+        )
+        verificacion = self.crear_verificacion()
+        verificacion.autorizacion = autorizacion
+        verificacion.save(update_fields=["autorizacion"])
+        self.assertTrue(calcular_habilitacion(self.persona).habilitado)
+
+        autorizacion.revocada_en = timezone.now()
+        autorizacion.save(update_fields=["revocada_en"])
+
+        resultado = calcular_habilitacion(self.persona)
+        self.assertEqual((resultado.habilitado, resultado.motivo), (False, self.MOTIVO_ANTECEDENTES))
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, EstadoVerificacion.VALIDADA)
 
     def test_una_renovacion_en_curso_no_quita_la_habilitacion_vigente(self):
         self.crear_verificacion()
