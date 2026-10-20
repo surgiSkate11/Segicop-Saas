@@ -1,4 +1,6 @@
 {% extends "base.html" %}
+{% load static %}
+{% block extra_head %}<script src="{% static 'antecedentes/carga.js' %}" defer></script>{% endblock %}
 {% block titulo %}Antecedentes de {{ verificacion.persona.nombre_completo }} · SIGECOP{% endblock %}
 {% block nav_antecedentes %}activo{% endblock %}
 {% block migas %}
@@ -12,16 +14,102 @@
   <p class="sc-subtitulo">
     Estado: <span class="sc-estado sc-estado--{{ verificacion.estado|lower }}">{{ verificacion.get_estado_display }}</span>
     · Modo: {{ verificacion.get_modo_conector_display }}
+    · Finalidad: {{ verificacion.get_finalidad_display }}
   </p>
 
-  {% if verificacion.estado == "CONTINGENCIA_MANUAL" %}
+  {% if espera_autorizacion %}
+    <div class="sc-banner">
+      <div class="sc-banner__icono">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 4 7v6c0 5 4 7.5 8 8 4-.5 8-3 8-8V7z"/></svg>
+      </div>
+      <div>
+        <p class="sc-banner__titulo">Autorización pendiente</p>
+        <p class="sc-banner__detalle">No se consulta nada hasta registrar la autorización de la persona para: {{ verificacion.get_finalidad_display }}.</p>
+      </div>
+      <button type="button" class="sc-boton-primario"
+              hx-get="{% url 'antecedentes:autorizar' verificacion.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
+        Registrar autorización
+      </button>
+    </div>
+  {% elif autorizacion %}
+    <p class="sc-texto-muted" style="margin-bottom: 24px;">
+      Autorización: {{ autorizacion.get_medio_display }} · versión {{ autorizacion.version }}
+      · otorgada el {{ autorizacion.otorgada_en|date:"d/m/Y" }}
+      {% if autorizacion.referencia_evidencia %}· evidencia: {{ autorizacion.referencia_evidencia }}{% endif %}
+      {% if autorizacion.revocada_en %}· <strong>revocada el {{ autorizacion.revocada_en|date:"d/m/Y" }}: {{ autorizacion.motivo_revocacion }}</strong>{% endif %}
+      {% if puede_revocar %}
+        · <button type="button" class="sc-enlace-control"
+                  hx-get="{% url 'antecedentes:revocar-autorizacion' verificacion.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
+          Revocar autorización
+        </button>
+      {% endif %}
+    </p>
+  {% endif %}
+
+  {% if consulta_asistida %}
+    <div class="sc-banner">
+      <div>
+        <p class="sc-banner__titulo">Consulta asistida en el portal del Ministerio del Interior</p>
+        <p class="sc-banner__detalle">
+          Abre el portal en otra pestaña, pega la cédula, resuelve el CAPTCHA, descarga el certificado y cárgalo aquí.
+          SIGECOP no resuelve el CAPTCHA por ti.
+        </p>
+        <div class="sc-campo" style="margin:12px 0; max-width:260px;">
+          <label for="cedula-consulta">Cédula</label>
+          <input id="cedula-consulta" type="text" readonly value="{{ verificacion.persona.numero_documento }}" onclick="this.select()">
+        </div>
+      </div>
+      <form method="post" target="_blank">
+        {% csrf_token %}
+        <input type="hidden" name="accion" value="continuar">
+        <button type="submit" class="sc-boton-primario">Abrir portal del Ministerio</button>
+      </form>
+    </div>
+  {% endif %}
+
+  {% if verificacion.estado == "FALLIDA" %}
+    <div class="sc-banner">
+      <div>
+        <p class="sc-banner__titulo">No se pudo consultar el portal oficial</p>
+        <p class="sc-banner__detalle">
+          {% if reintentar_desde %}Podrás reintentar después de las {{ reintentar_desde|time:"H:i" }}.{% else %}Ya puedes volver a intentarlo.{% endif %}
+          La carga manual del certificado sigue disponible.
+        </p>
+      </div>
+      {% if not reintentar_desde %}
+        <form method="post">
+          {% csrf_token %}
+          <input type="hidden" name="accion" value="reintentar">
+          <button type="submit" class="sc-boton-secundario">Reintentar consulta</button>
+        </form>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  {% if puede_cargar %}
+    <form method="post" enctype="multipart/form-data" style="margin-bottom: 24px;">
+      {% csrf_token %}
+      <input type="hidden" name="accion" value="cargar_certificado">
+      <label class="sc-zona-carga" data-zona-carga
+             style="display:block; border:2px dashed var(--borde, #ccc); border-radius:12px; padding:24px; text-align:center; cursor:pointer;">
+        <p class="sc-banner__titulo">Cargar el certificado en PDF</p>
+        <p class="sc-banner__detalle">Arrastra aquí el PDF descargado del portal o haz clic para elegirlo (máximo 10 MB).</p>
+        <input type="file" name="archivo" accept="application/pdf">
+      </label>
+      <noscript><button type="submit" class="sc-boton-primario" style="margin-top:8px;">Subir certificado</button></noscript>
+    </form>
+
     <div class="sc-banner">
       <div class="sc-banner__icono">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 4 7v6c0 5 4 7.5 8 8 4-.5 8-3 8-8V7z"/></svg>
       </div>
       <div>
         <p class="sc-banner__titulo">Cargar resultado</p>
-        <p class="sc-banner__detalle">Registra lo que encontraste al consultar la fuente por fuera del sistema.</p>
+        <p class="sc-banner__detalle">
+          {% if verificacion.estado == "CAPTCHA_REQUERIDO" %}El portal exige resolver un CAPTCHA a una persona. {% endif %}
+          {% if verificacion.estado == "FALLIDA" %}No se obtuvo un resultado válido; esto no equivale a ausencia de antecedentes. {% endif %}
+          Registra lo que encontraste al consultar la fuente por fuera del sistema.
+        </p>
       </div>
     </div>
     <form method="post" style="margin-bottom: 32px;">
@@ -37,7 +125,29 @@
     </form>
   {% endif %}
 
-  {% if verificacion.estado == "EN_REVISION_MANUAL" %}
+  {% if documento %}
+    <p class="sc-etiqueta-seccion">Certificado cargado</p>
+    <div class="sc-tabla-envoltorio" style="margin-bottom: 24px;">
+      <table class="sc-tabla">
+        <tbody>
+          <tr><th>Número de certificado</th><td>{{ documento.numero_certificado|default:"—" }}</td></tr>
+          <tr><th>Fecha de emisión</th><td>{{ documento.fecha_emision|date:"d/m/Y"|default:"—" }}</td></tr>
+          <tr><th>Válido hasta</th><td>{{ documento.vigente_hasta_extraida|date:"d/m/Y"|default:"—" }}</td></tr>
+          <tr><th>Identificación</th><td>{{ documento.identificacion_extraida|default:"—" }}</td></tr>
+          <tr><th>Apellidos y nombres</th><td>{{ documento.nombre_extraido|default:"—" }}</td></tr>
+          <tr><th>Registra antecedentes</th><td>{{ documento.get_resultado_extraido_display }}</td></tr>
+          <tr><th>Firma detectada</th><td>{% if documento.firma_detectada %}Sí (sin validación criptográfica){% else %}No{% endif %}</td></tr>
+          <tr><th>Validación</th><td>{{ documento.estado_validacion }}{% if documento.codigo_error %} · {{ documento.codigo_error }}{% endif %}</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-bottom: 24px;">
+      <a class="sc-enlace-control" href="{% url 'antecedentes:descargar-documento' documento.pk %}">Descargar PDF original</a>
+      <span class="sc-texto-muted">· SHA-256 {{ documento.sha256|truncatechars:20 }} · la descarga queda auditada</span>
+    </p>
+  {% endif %}
+
+  {% if puede_decidir or bloqueado_cuatro_ojos %}
     <div class="sc-banner">
       <div class="sc-banner__icono" style="background: var(--teal-suave); color: var(--teal);">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
@@ -48,8 +158,13 @@
           Resultado reportado: <strong>{{ verificacion.get_resultado_display }}</strong>
           {% if verificacion.numero_certificado %} · Certificado: {{ verificacion.numero_certificado }}{% endif %}
         </p>
+        {% if bloqueado_cuatro_ojos %}
+          <p class="sc-banner__detalle">Quien cargó el documento no puede validarlo. Pide a otro revisor de antecedentes que decida este caso.</p>
+        {% endif %}
       </div>
     </div>
+  {% endif %}
+  {% if puede_decidir %}
     <form method="post" style="margin-bottom: 32px;">
       {% csrf_token %}
       <input type="hidden" name="accion" value="validar">
@@ -60,6 +175,23 @@
       <div class="sc-campo" style="margin:12px 0;"><label>Comentario</label>{{ form_validar.comentario }}</div>
       <button type="submit" class="sc-boton-primario">Registrar decisión</button>
     </form>
+  {% endif %}
+  {% if espera_revision %}
+    <div class="sc-banner">
+      <div>
+        <p class="sc-banner__titulo">Pendiente de revisión</p>
+        <p class="sc-banner__detalle">Un revisor de antecedentes debe decidir este caso. El resultado y el certificado solo los ve el revisor.</p>
+      </div>
+    </div>
+  {% endif %}
+
+  {% if verificacion.estado == "PDF_RECIBIDO" %}
+    <div class="sc-banner">
+      <div>
+        <p class="sc-banner__titulo">Documento recibido</p>
+        <p class="sc-banner__detalle">El certificado está pendiente de comprobación automática.</p>
+      </div>
+    </div>
   {% endif %}
 
   <p class="sc-etiqueta-seccion">Bitácora</p>

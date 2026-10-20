@@ -29,6 +29,8 @@
     <h1>SIGECOP</h1>
     <p class="sc-subtitulo">Gestión de contratistas y permisos</p>
 
+    {% include "partials/_mensajes.html" %}
+
     {% if form.non_field_errors %}
       <ul class="sc-errores">
         {% for error in form.non_field_errors %}<li>{{ error }}</li>{% endfor %}
@@ -38,7 +40,7 @@
     <form method="post">
       {% csrf_token %}
       <div class="sc-campo">
-        <label for="{{ form.username.id_for_label }}">Correo electrónico</label>
+        <label for="{{ form.username.id_for_label }}">{{ form.username.label }}</label>
         {{ form.username }}
       </div>
       <div class="sc-campo">

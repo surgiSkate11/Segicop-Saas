@@ -54,6 +54,18 @@ class Instalacion(BaseModel):
         return f"{self.nombre} ({self.organizacion.nombre})"
 
 
+class TipoCuenta(models.TextChoices):
+    """
+    INTERNA = personal del cliente (entra con su correo, ve el sistema).
+    EMPRESA/PERSONA = cuentas de portal: entran con RUC/cédula y solo
+    alcanzan el portal (ver apps.portal.middleware).
+    """
+
+    INTERNA = "INTERNA", "Interna"
+    EMPRESA = "EMPRESA", "Empresa contratista"
+    PERSONA = "PERSONA", "Persona"
+
+
 class Usuario(BaseModel, AbstractBaseUser, PermissionsMixin):
     """
     Identidad de acceso (RF-001 a RF-004). No tiene organización directa:
@@ -63,6 +75,19 @@ class Usuario(BaseModel, AbstractBaseUser, PermissionsMixin):
 
     email = models.EmailField(unique=True)
     nombre_completo = models.CharField(max_length=255)
+    nombre_usuario = models.CharField(
+        max_length=30,
+        unique=True,
+        null=True,
+        blank=True,
+        help_text="RUC (empresa) o número de documento (persona). Nulo para cuentas internas, que usan el correo.",
+    )
+    tipo_cuenta = models.CharField(max_length=10, choices=TipoCuenta.choices, default=TipoCuenta.INTERNA)
+    cuenta_activada_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Momento en que el titular definió su contraseña desde el enlace de activación.",
+    )
     mfa_habilitado = models.BooleanField(
         default=False,
         help_text="RF-001: obligatorio para perfiles administrativos y revisores de información sensible.",
@@ -81,6 +106,47 @@ class Usuario(BaseModel, AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return f"{self.nombre_completo} <{self.email}>"
+
+    @property
+    def es_cuenta_portal(self) -> bool:
+        return self.tipo_cuenta != TipoCuenta.INTERNA
+
+
+class CuentaAccesoMixin(models.Model):
+    """
+    Mixin de modelo para todo titular que recibe una cuenta de portal
+    (EmpresaContratista, Persona). Cada titular declara cómo se arma su
+    cuenta; `apps.identidad.services.provisionar_cuenta()` y las vistas
+    de "Enviar acceso" trabajan sobre este contrato sin conocer al titular.
+    """
+
+    TIPO_CUENTA: str = ""
+    ROL_CUENTA: str = ""
+
+    usuario = models.ForeignKey(
+        Usuario,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        editable=False,
+        related_name="%(class)s_cuentas",
+        help_text="Cuenta de portal del titular. La comparten sus registros en otras organizaciones.",
+    )
+
+    class Meta:
+        abstract = True
+
+    @property
+    def nombre_usuario_cuenta(self) -> str:
+        raise NotImplementedError
+
+    @property
+    def correo_cuenta(self) -> str:
+        raise NotImplementedError
+
+    @property
+    def nombre_cuenta(self) -> str:
+        raise NotImplementedError
 
 
 class Rol(BaseModel):

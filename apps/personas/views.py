@@ -7,6 +7,7 @@ from django.views.generic import ListView
 from apps.core.exceptions import DomainError
 from apps.core.modals import exito_htmx, render_modal
 from apps.identidad.context_processors import organizacion_actual
+from apps.identidad.mixins import EnviarAccesoModalView
 from apps.personas import services
 from apps.personas.forms import AsignarPersonaForm, PersonaForm
 from apps.personas.models import Persona
@@ -25,6 +26,7 @@ class PersonaListView(LoginRequiredMixin, ListView):
     def get_queryset(self):
         return (
             Persona.objects.filter(organizacion_id__in=_organizaciones_del_usuario(self.request.user))
+            .select_related("usuario")
             .prefetch_related("asignaciones__empresa")
             .order_by("apellidos", "nombres")
         )
@@ -73,11 +75,11 @@ class PersonaModalView(_ModalView):
                 "contacto_telefono": persona.contacto_telefono,
                 "contacto_email": persona.contacto_email,
             }
-        return self._modal(request, PersonaForm(initial=initial), persona)
+        return self._modal(request, PersonaForm(initial=initial, creando=persona is None), persona)
 
     def post(self, request, pk=None):
         persona = self._persona(request, pk)
-        form = PersonaForm(request.POST)
+        form = PersonaForm(request.POST, creando=persona is None)
         if form.is_valid():
             try:
                 if persona:
@@ -130,3 +132,11 @@ class AsignarPersonaModalView(_ModalView):
             else:
                 return exito_htmx(request, mensaje="Persona asignada a la empresa.", url=reverse("personas:lista"))
         return self._modal(request, form, persona)
+
+
+class EnviarAccesoPersonaView(EnviarAccesoModalView):
+    url_lista = "personas:lista"
+    url_accion = "personas:enviar_acceso"
+
+    def get_titular(self, request, pk):
+        return get_object_or_404(Persona, pk=pk, organizacion_id__in=_organizaciones_del_usuario(request.user))

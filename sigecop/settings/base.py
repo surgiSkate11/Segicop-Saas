@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     "apps.antecedentes",
     "apps.accesos",
     "apps.trabajos",
+    "apps.portal",
 ]
 
 MIDDLEWARE = [
@@ -49,6 +50,7 @@ MIDDLEWARE = [
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django_otp.middleware.OTPMiddleware",
+    "apps.portal.middleware.AccesoPortalMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "django_htmx.middleware.HtmxMiddleware",
@@ -77,6 +79,16 @@ WSGI_APPLICATION = "sigecop.wsgi.application"
 ASGI_APPLICATION = "sigecop.asgi.application"
 
 AUTH_USER_MODEL = "identidad.Usuario"
+
+# Login con RUC/cédula (cuentas de portal) o correo (personal interno).
+AUTHENTICATION_BACKENDS = ["apps.identidad.backends.NombreUsuarioOCorreoBackend"]
+
+# Vigencia del enlace de activación de cuentas de portal (y de restablecimiento): 72 h.
+PASSWORD_RESET_TIMEOUT = 72 * 60 * 60
+
+# URL pública usada para armar los enlaces de los correos (no hay request en los servicios).
+SIGECOP_SITIO_URL = env("SIGECOP_SITIO_URL", default="http://localhost:8000")
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="SIGECOP <no-responder@sigecop.local>")
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -117,6 +129,8 @@ STATICFILES_DIRS = [BASE_DIR / "static"]
 
 MEDIA_URL = "media/"
 MEDIA_ROOT = BASE_DIR / "media"
+# Certificados de antecedentes (S7): fuera de MEDIA_ROOT, nunca servidos como archivos públicos.
+ANTECEDENTES_PRIVATE_ROOT = BASE_DIR / "privado" / "antecedentes"
 
 CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default="redis://localhost:6379/1")
@@ -127,6 +141,18 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": 86400.0,
     },
 }
+
+# Antecedentes penales (consulta asistida al portal oficial; nunca se resuelve el CAPTCHA).
+# "asistido": comprueba el portal y deja el caso listo para que una persona lo consulte; "manual": solo carga manual.
+ANTECEDENTES_CONECTOR_MODE = env("ANTECEDENTES_CONECTOR_MODE", default="asistido")
+# False: la comprobación corre en la misma petición (no requiere worker). True: se encola en Celery.
+ANTECEDENTES_CONSULTA_ASINCRONA = env.bool("ANTECEDENTES_CONSULTA_ASINCRONA", default=False)
+ANTECEDENTES_SONDEO_TIMEOUT = 5  # segundos por intento
+ANTECEDENTES_ESPERAS_REINTENTO = (2, 5)  # tiempo agotado o 5xx: máximo dos reintentos, espera incremental
+ANTECEDENTES_CIRCUITO_UMBRAL = 3  # fallos seguidos que pausan la fuente
+ANTECEDENTES_CIRCUITO_PAUSA = 600  # segundos de pausa; es la hora que se indica para reintentar
+ANTECEDENTES_PDF_TIMEOUT = 10  # segundos para analizar un PDF en un proceso aparte; si se pasa, va a cuarentena
+ANTECEDENTES_PDF_MAX_BYTES_PAGINA = 512 * 1024  # contenido decodificado máximo por página
 
 OTEL_ENABLED = env.bool("OTEL_ENABLED", default=False)
 OTEL_SERVICE_NAME = env("OTEL_SERVICE_NAME", default="sigecop")
