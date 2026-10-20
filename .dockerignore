@@ -1,9 +1,0 @@
-.git
-.gitignore
-env
-node_modules
-__pycache__
-*.pyc
-staticfiles
-media
-.env
