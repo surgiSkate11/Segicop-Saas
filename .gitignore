@@ -25,6 +25,8 @@ __pycache__/
 htmlcov/
 # Ignoramos archivos de configuración de PyCharm:
 .idea/
+# Configuración local del revisor Gentleman Guardian Angel:
+.gga
 # Ignoramos archivos del proyecto
 doc/
 # Ignoramos los roles iniciales 
