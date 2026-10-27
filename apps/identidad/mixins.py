@@ -1,4 +1,5 @@
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.core.exceptions import PermissionDenied
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.views import View
@@ -6,9 +7,44 @@ from django.views import View
 from apps.core.exceptions import DomainError
 from apps.core.modals import exito_htmx
 from apps.identidad import services
+from apps.identidad.permisos import organizaciones_con_permiso, puede
 
 
-class EnviarAccesoModalView(LoginRequiredMixin, View):
+class RequierePermisoMixin(LoginRequiredMixin):
+    """
+    S3: denegar por defecto. La vista declara la acción de la matriz (`identidad.permisos`) que exige;
+    sin ella en ninguna organización del usuario responde 403 antes de leer o escribir nada.
+
+        class EmpresaListView(RequierePermisoMixin, ListView):
+            accion_requerida = "ver_registros"
+
+    Cuando GET y POST exigen acciones distintas, `accion_requerida` es un dict por método HTTP
+    ({"GET": "ver_registros", "POST": "gestionar_trabajo"}). Un método ausente del dict se deniega.
+    Quien consulta datos filtra con `self.organizaciones_permitidas()` (explícito, constitución §2.6),
+    de modo que un objeto de otra organización —o de una donde falta la acción— es 404.
+    """
+
+    accion_requerida = None
+
+    def accion_para(self, metodo):
+        accion = self.accion_requerida
+        if isinstance(accion, dict):
+            return accion.get("GET" if metodo == "HEAD" else metodo)
+        return accion
+
+    def organizaciones_permitidas(self):
+        return organizaciones_con_permiso(self.request.user, self.accion_actual)
+
+    def dispatch(self, request, *args, **kwargs):
+        if not request.user.is_authenticated:
+            return self.handle_no_permission()
+        self.accion_actual = self.accion_para(request.method)
+        if self.accion_actual is None or not puede(request.user, self.accion_actual):
+            raise PermissionDenied("Tu rol no permite esta acción.")
+        return super().dispatch(request, *args, **kwargs)
+
+
+class EnviarAccesoModalView(RequierePermisoMixin, View):
     """
     S9: modal HTMX para (re)enviar el enlace de acceso a cualquier titular
     con CuentaAccesoMixin. Cada app solo declara cómo encontrar al titular
@@ -20,6 +56,7 @@ class EnviarAccesoModalView(LoginRequiredMixin, View):
             def get_titular(self, request, pk): ...
     """
 
+    accion_requerida = "enviar_credenciales"
     url_lista = ""
     url_accion = ""
     template_name = "identidad/_modal_enviar_acceso.html"

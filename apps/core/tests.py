@@ -5,11 +5,11 @@ from django.test import TestCase
 from django.urls import reverse
 from openpyxl import load_workbook
 
-from apps.core.models import AlertaNotificacion, EventoAuditoria, ExportacionAuditoria
+from apps.core.models import AlertaNotificacion, EstadoAlerta, EventoAuditoria, ExportacionAuditoria
 from apps.core.services import crear_alerta, exportar_alertas_csv, exportar_alertas_xlsx, marcar_alerta_leida
 from apps.empresas.models import EmpresaContratista
 from apps.empresas.services import crear_empresa
-from apps.identidad.models import Organizacion, Usuario
+from apps.identidad.models import Organizacion, Rol, RolAsignado, Usuario
 
 
 class AuditoriaTests(TestCase):
@@ -275,3 +275,73 @@ class ConfiguracionCorreoAdminTests(TestCase):
 
         self.assertEqual(mail.outbox[0].to, ["root@example.com"])
         self.assertEqual(mail.outbox[0].subject, "SIGECOP · Correo de prueba")
+
+
+def usuario_con_rol(organizacion, codigo, activo=True):
+    usuario = Usuario.objects.create_user(
+        email=f"{codigo}@cliente.com", nombre_completo=codigo, password="UnaClaveSegura123!"
+    )
+    rol, _ = Rol.objects.get_or_create(codigo=codigo, defaults={"nombre": codigo})
+    RolAsignado.objects.create(usuario=usuario, organizacion=organizacion, rol=rol, activo=activo)
+    return usuario
+
+
+class AlertasPermisosTests(TestCase):
+    """S3: alertas y exportación deniegan por defecto según la matriz de roles."""
+
+    def setUp(self):
+        self.organizacion = Organizacion.objects.create(nombre="Organización de alertas")
+        self.alerta, _ = crear_alerta(
+            organizacion=self.organizacion,
+            clave_idempotencia="DOCUMENTO:abc123:VENCIDO",
+            tipo="VENCIMIENTO_DOCUMENTO",
+            agrupador="DOCUMENTOS_VENCIDOS",
+            titulo="Documento vencido",
+            mensaje="El documento requiere renovación.",
+            severidad="ALTA",
+        )
+
+    def _conteos(self):
+        return (EventoAuditoria.objects.count(), ExportacionAuditoria.objects.count())
+
+    def test_garita_no_ve_ni_marca_ni_exporta_alertas(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "seguridad_garita"))
+        antes = self._conteos()
+
+        self.assertEqual(self.client.get(reverse("identidad:alertas")).status_code, 403)
+        self.assertEqual(self.client.post(reverse("identidad:alerta_leer", args=[self.alerta.pk])).status_code, 403)
+        self.assertEqual(self.client.get(reverse("identidad:exportar_alertas")).status_code, 403)
+
+        self.alerta.refresh_from_db()
+        self.assertEqual(self.alerta.estado, EstadoAlerta.PENDIENTE)
+        self.assertEqual(self._conteos(), antes)
+
+    def test_gestor_ve_y_marca_alertas_pero_no_exporta(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "gestor_contratista"))
+        self.assertEqual(self.client.get(reverse("identidad:alertas")).status_code, 200)
+        antes = self._conteos()
+
+        self.assertEqual(self.client.get(reverse("identidad:exportar_alertas")).status_code, 403)
+        self.assertEqual(self.client.get(reverse("identidad:exportar_alertas"), {"formato": "xlsx"}).status_code, 403)
+        self.assertEqual(self._conteos(), antes)
+
+        self.client.post(reverse("identidad:alerta_leer", args=[self.alerta.pk]))
+        self.alerta.refresh_from_db()
+        self.assertNotEqual(self.alerta.estado, EstadoAlerta.PENDIENTE)
+
+    def test_rol_inactivo_no_otorga_nada(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "admin_cliente", activo=False))
+
+        self.assertEqual(self.client.get(reverse("identidad:alertas")).status_code, 403)
+        self.assertEqual(self.client.get(reverse("identidad:exportar_alertas")).status_code, 403)
+
+    def test_admin_cliente_ve_y_exporta(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "admin_cliente"))
+
+        self.assertEqual(self.client.get(reverse("identidad:alertas")).status_code, 200)
+        csv = self.client.get(reverse("identidad:exportar_alertas"))
+        self.assertEqual(csv.status_code, 200)
+        self.assertEqual(csv["Content-Type"], "text/csv; charset=utf-8")
+        xlsx = self.client.get(reverse("identidad:exportar_alertas"), {"formato": "xlsx"})
+        self.assertEqual(xlsx.status_code, 200)
+        self.assertEqual(ExportacionAuditoria.objects.count(), 2)

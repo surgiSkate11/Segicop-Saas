@@ -2,6 +2,8 @@ from datetime import datetime, timedelta
 from unittest import mock
 
 from django.contrib.auth import authenticate
+from django.contrib.auth.models import AnonymousUser
+from django.core.exceptions import PermissionDenied
 from django.test import TestCase
 from django.urls import reverse
 from django.utils.encoding import force_bytes
@@ -10,8 +12,10 @@ from django_otp import oath
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
 from apps.core.models import EventoAuditoria
+from apps.empresas.services import crear_empresa
+from apps.identidad import permisos
 from apps.identidad.forms import LoginForm
-from apps.identidad.models import TipoCuenta, Usuario
+from apps.identidad.models import Organizacion, Rol, RolAsignado, TipoCuenta, Usuario
 from apps.identidad.tokens import ActivacionCuentaTokenGenerator, activacion_cuenta_token
 
 CLAVE_NUEVA = "Contratista-Segura-2026"
@@ -252,3 +256,152 @@ class ActivacionCuentaTests(TestCase):
         respuesta = self._abrir_formulario(reverse("identidad:activar_cuenta", args=[uid, token]))
 
         self.assertContains(respuesta, "El enlace no es válido o ya venció")
+
+
+def usuario_interno(email="interno@cliente.com"):
+    return Usuario.objects.create_user(email=email, nombre_completo="Usuario interno", password="UnaClaveSegura123!")
+
+
+def asignar_rol(usuario, organizacion, codigo, activo=True):
+    rol, _ = Rol.objects.get_or_create(codigo=codigo, defaults={"nombre": codigo})
+    return RolAsignado.objects.create(usuario=usuario, organizacion=organizacion, rol=rol, activo=activo)
+
+
+class MatrizDePermisosTests(TestCase):
+    """S2: la matriz vive en un solo módulo y todo lo que no está en ella se deniega."""
+
+    def setUp(self):
+        self.organizacion = Organizacion.objects.create(nombre="Minera del Sur")
+        self.otra = Organizacion.objects.create(nombre="Otra minera")
+        self.usuario = usuario_interno()
+
+    def test_cada_rol_tiene_solo_las_acciones_de_la_matriz(self):
+        esperado = {
+            "admin_cliente": {
+                "ver_registros", "editar_registros", "enviar_credenciales", "configurar_catalogo",
+                "asignar_requisitos", "subir_documentos", "revisar_documentos", "solicitar_ingreso",
+                "aprobar_ingreso", "crear_trabajo", "gestionar_trabajo", "ver_alertas", "exportar_reportes",
+                "gestionar_usuarios",
+            },
+            "gestor_contratista": {
+                "ver_registros", "editar_registros", "enviar_credenciales", "asignar_requisitos",
+                "subir_documentos", "solicitar_ingreso", "crear_trabajo", "ver_alertas",
+            },
+            "revisor_documental": {"ver_registros", "revisar_documentos", "ver_alertas"},
+            "responsable_area": {
+                "ver_registros", "solicitar_ingreso", "aprobar_ingreso", "crear_trabajo", "gestionar_trabajo",
+                "ver_alertas",
+            },
+            "seguridad_garita": {"garita"},
+            "operador_antecedentes": {"ver_registros", "ver_alertas"},
+            "revisor_antecedentes": {"ver_registros", "ver_alertas"},
+            "contratista": set(),
+            "admin_plataforma": set(),
+        }
+        for codigo, acciones in esperado.items():
+            with self.subTest(rol=codigo):
+                usuario = usuario_interno(f"{codigo}@cliente.com")
+                asignar_rol(usuario, self.organizacion, codigo)
+
+                self.assertEqual(permisos.acciones_permitidas(usuario), acciones)
+
+    def test_accion_desconocida_falla_cerrado(self):
+        asignar_rol(self.usuario, self.organizacion, "admin_cliente")
+
+        for funcion in (
+            permisos.puede,
+            permisos.exigir,
+            permisos.organizaciones_con_permiso,
+            permisos.organizacion_con_permiso,
+        ):
+            with self.subTest(funcion=funcion.__name__), self.assertRaises(ValueError):
+                funcion(self.usuario, "accion_inventada")
+
+    def test_rol_inactivo_no_otorga_nada(self):
+        asignar_rol(self.usuario, self.organizacion, "admin_cliente", activo=False)
+
+        self.assertFalse(permisos.puede(self.usuario, "ver_registros"))
+        self.assertEqual(list(permisos.organizaciones_con_permiso(self.usuario, "ver_registros")), [])
+        self.assertIsNone(permisos.organizacion_con_permiso(self.usuario, "ver_registros"))
+        self.assertEqual(permisos.acciones_permitidas(self.usuario), set())
+
+    def test_el_permiso_es_por_organizacion(self):
+        asignar_rol(self.usuario, self.organizacion, "gestor_contratista")
+        asignar_rol(self.usuario, self.otra, "seguridad_garita")
+
+        self.assertTrue(permisos.puede(self.usuario, "editar_registros", self.organizacion.pk))
+        self.assertFalse(permisos.puede(self.usuario, "editar_registros", self.otra.pk))
+        self.assertTrue(permisos.puede(self.usuario, "garita", self.otra))
+        self.assertEqual(list(permisos.organizaciones_con_permiso(self.usuario, "editar_registros")), [self.organizacion.pk])
+        self.assertEqual(permisos.organizacion_con_permiso(self.usuario, "garita"), self.otra)
+
+    def test_exigir_lanza_403_sin_permiso(self):
+        asignar_rol(self.usuario, self.organizacion, "seguridad_garita")
+
+        with self.assertRaises(PermissionDenied):
+            permisos.exigir(self.usuario, "editar_registros")
+        permisos.exigir(self.usuario, "garita")
+
+    def test_rol_de_plataforma_sin_organizacion_y_anonimos_no_reciben_nada(self):
+        asignar_rol(self.usuario, None, "admin_cliente")
+
+        self.assertFalse(permisos.puede(self.usuario, "ver_registros"))
+        self.assertFalse(permisos.puede(AnonymousUser(), "ver_registros"))
+
+
+class PanelYMenuPermisosTests(TestCase):
+    """S3/S4: el panel exige un rol activo; el menú y los conteos solo muestran lo permitido."""
+
+    def setUp(self):
+        self.organizacion = Organizacion.objects.create(nombre="Minera del Sur")
+        crear_empresa(
+            organizacion=self.organizacion,
+            razon_social="Constructora Andina",
+            ruc="1790012345001",
+            actor=usuario_interno("actor@cliente.com"),
+        )
+        self.usuario = usuario_interno()
+
+    def _enlace(self, nombre):
+        return f'href="{reverse(nombre)}"'
+
+    def test_usuario_sin_rol_activo_recibe_403(self):
+        asignar_rol(self.usuario, self.organizacion, "admin_cliente", activo=False)
+        self.client.force_login(self.usuario)
+
+        self.assertEqual(self.client.get(reverse("identidad:panel")).status_code, 403)
+
+    def test_garita_abre_el_panel_sin_conteos_ni_enlaces_ajenos(self):
+        asignar_rol(self.usuario, self.organizacion, "seguridad_garita")
+        self.client.force_login(self.usuario)
+
+        respuesta = self.client.get(reverse("identidad:panel"))
+
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertEqual(respuesta.context["total_empresas"], 0)
+        self.assertEqual(respuesta.context["total_personas"], 0)
+        self.assertContains(respuesta, self._enlace("accesos:garita"))
+        for nombre in ("empresas:lista", "personas:lista", "cumplimiento:bandeja", "accesos:lista", "identidad:alertas"):
+            with self.subTest(enlace=nombre):
+                self.assertNotContains(respuesta, self._enlace(nombre))
+
+    def test_gestor_ve_conteos_y_su_menu_pero_no_la_garita_ni_el_catalogo(self):
+        asignar_rol(self.usuario, self.organizacion, "gestor_contratista")
+        self.client.force_login(self.usuario)
+
+        respuesta = self.client.get(reverse("identidad:panel"))
+
+        self.assertEqual(respuesta.context["total_empresas"], 1)
+        self.assertContains(respuesta, self._enlace("empresas:lista"))
+        self.assertContains(respuesta, self._enlace("identidad:alertas"))
+        self.assertNotContains(respuesta, self._enlace("accesos:garita"))
+        self.assertNotContains(respuesta, self._enlace("antecedentes:bandeja"))
+
+    def test_operador_de_antecedentes_ve_el_menu_de_antecedentes(self):
+        asignar_rol(self.usuario, self.organizacion, "operador_antecedentes")
+        self.client.force_login(self.usuario)
+
+        respuesta = self.client.get(reverse("identidad:panel"))
+
+        self.assertContains(respuesta, self._enlace("antecedentes:bandeja"))
+        self.assertNotContains(respuesta, self._enlace("accesos:garita"))

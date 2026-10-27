@@ -1,5 +1,6 @@
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.core.exceptions import PermissionDenied
 from django.contrib.auth.views import INTERNAL_RESET_SESSION_TOKEN, PasswordResetConfirmView
 from django.http import HttpResponseRedirect
 from django.urls import reverse_lazy
@@ -9,6 +10,7 @@ from apps.core.models import AlertaNotificacion, EstadoAlerta
 from apps.empresas.models import EmpresaContratista
 from apps.identidad import services
 from apps.identidad.forms import DefinirPasswordForm
+from apps.identidad.permisos import organizaciones_con_permiso, tiene_rol_activo
 from apps.identidad.tokens import activacion_cuenta_token
 from apps.personas.models import Persona
 
@@ -35,22 +37,31 @@ class ActivarCuentaView(PasswordResetConfirmView):
 
 
 class PanelView(LoginRequiredMixin, TemplateView):
+    """
+    Cualquier usuario interno con un rol activo puede abrirlo; sin rol activo, 403.
+    Cada conteo solo cubre las organizaciones donde el rol permite esa información.
+    """
+
     template_name = "identidad/panel.html"
+
+    def dispatch(self, request, *args, **kwargs):
+        if request.user.is_authenticated and not tiene_rol_activo(request.user):
+            raise PermissionDenied("Tu usuario no tiene un rol activo.")
+        return super().dispatch(request, *args, **kwargs)
 
     def get_context_data(self, **kwargs):
         contexto = super().get_context_data(**kwargs)
-        organizaciones_ids = self.request.user.roles_asignados.filter(activo=True).values_list(
-            "organizacion_id", flat=True
-        )
+        registros_ids = organizaciones_con_permiso(self.request.user, "ver_registros")
+        alertas_ids = organizaciones_con_permiso(self.request.user, "ver_alertas")
 
-        contexto["total_empresas"] = EmpresaContratista.objects.filter(organizacion_id__in=organizaciones_ids).count()
-        contexto["total_personas"] = Persona.objects.filter(organizacion_id__in=organizaciones_ids).count()
+        contexto["total_empresas"] = EmpresaContratista.objects.filter(organizacion_id__in=registros_ids).count()
+        contexto["total_personas"] = Persona.objects.filter(organizacion_id__in=registros_ids).count()
         contexto["alertas_pendientes"] = AlertaNotificacion.objects.filter(
-            organizacion_id__in=organizaciones_ids,
+            organizacion_id__in=alertas_ids,
             estado=EstadoAlerta.PENDIENTE,
         )[:8]
         contexto["total_alertas"] = AlertaNotificacion.objects.filter(
-            organizacion_id__in=organizaciones_ids,
+            organizacion_id__in=alertas_ids,
             estado=EstadoAlerta.PENDIENTE,
         ).count()
         return contexto

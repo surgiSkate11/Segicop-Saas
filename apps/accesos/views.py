@@ -1,5 +1,4 @@
 from django.contrib import messages
-from django.contrib.auth.mixins import LoginRequiredMixin
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
@@ -9,17 +8,16 @@ from apps.accesos import services
 from apps.accesos.forms import GaritaForm, SolicitarPermisoForm
 from apps.accesos.models import EstadoPermiso, PermisoIngreso, TipoEvento
 from apps.core.exceptions import DomainError
-from apps.identidad.context_processors import organizacion_actual
+from apps.identidad.mixins import RequierePermisoMixin
+from apps.identidad.permisos import organizacion_con_permiso
 from apps.personas.models import Persona
 from apps.core.modals import exito_htmx, render_modal
 
 
-def _organizaciones_del_usuario(usuario):
-    return usuario.roles_asignados.filter(activo=True).values_list("organizacion_id", flat=True)
-
-
-class SolicitarPermisoView(LoginRequiredMixin, View):
+class SolicitarPermisoView(RequierePermisoMixin, View):
     """Modal HTMX (antes era una página completa)."""
+
+    accion_requerida = "solicitar_ingreso"
 
     def dispatch(self, request, *args, **kwargs):
         if not request.htmx:
@@ -27,8 +25,7 @@ class SolicitarPermisoView(LoginRequiredMixin, View):
         return super().dispatch(request, *args, **kwargs)
 
     def _get_persona(self, request, persona_pk):
-        organizaciones_ids = _organizaciones_del_usuario(request.user)
-        return get_object_or_404(Persona, pk=persona_pk, organizacion_id__in=organizaciones_ids)
+        return get_object_or_404(Persona, pk=persona_pk, organizacion_id__in=self.organizaciones_permitidas())
 
     def _modal(self, request, form, persona):
         return render_modal(
@@ -68,42 +65,44 @@ class SolicitarPermisoView(LoginRequiredMixin, View):
         return exito_htmx(request, mensaje=mensaje, url=reverse("accesos:detalle", args=[permiso.pk]))
 
 
-class PermisoListView(LoginRequiredMixin, ListView):
+class PermisoListView(RequierePermisoMixin, ListView):
+    accion_requerida = "ver_registros"
     model = PermisoIngreso
     template_name = "accesos/lista.html"
     context_object_name = "permisos"
     paginate_by = 25
 
     def get_queryset(self):
-        organizaciones_ids = _organizaciones_del_usuario(self.request.user)
         return (
-            PermisoIngreso.objects.filter(organizacion_id__in=organizaciones_ids)
+            PermisoIngreso.objects.filter(organizacion_id__in=self.organizaciones_permitidas())
             .select_related("persona", "instalacion")
             .order_by("-created_at")
         )
 
 
-class PermisoDetalleView(LoginRequiredMixin, View):
+class PermisoDetalleView(RequierePermisoMixin, View):
+    accion_requerida = "ver_registros"
+
     def get(self, request, pk):
-        organizaciones_ids = _organizaciones_del_usuario(request.user)
         permiso = get_object_or_404(
             PermisoIngreso.objects.select_related("persona", "instalacion"),
             pk=pk,
-            organizacion_id__in=organizaciones_ids,
+            organizacion_id__in=self.organizaciones_permitidas(),
         )
         return render(request, "accesos/detalle.html", {"permiso": permiso, "eventos": permiso.eventos.all()})
 
 
-class GaritaView(LoginRequiredMixin, View):
+class GaritaView(RequierePermisoMixin, View):
+    accion_requerida = "garita"
     template_name = "accesos/garita.html"
 
     def get(self, request):
-        organizacion = organizacion_actual(request).get("organizacion_actual")
+        organizacion = organizacion_con_permiso(request.user, self.accion_actual)
         form = GaritaForm(organizacion=organizacion)
         return render(request, self.template_name, {"form": form})
 
     def post(self, request):
-        organizacion = organizacion_actual(request).get("organizacion_actual")
+        organizacion = organizacion_con_permiso(request.user, self.accion_actual)
         form = GaritaForm(request.POST, organizacion=organizacion)
         if not form.is_valid():
             messages.error(request, "Revisa el formulario: " + form.errors.as_text())

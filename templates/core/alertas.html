@@ -12,8 +12,8 @@
       <p class="sc-subtitulo">Alertas agrupadas por tipo para las organizaciones que administras.</p>
     </div>
     <div class="flex gap-2">
-      <a href="{% url 'core:exportar_alertas' %}?formato=csv" class="sc-boton-secundario">Exportar CSV</a>
-      <a href="{% url 'core:exportar_alertas' %}?formato=xlsx" class="sc-boton-secundario">Exportar XLSX</a>
+      <a href="{% url 'identidad:exportar_alertas' %}?formato=csv" class="sc-boton-secundario">Exportar CSV</a>
+      <a href="{% url 'identidad:exportar_alertas' %}?formato=xlsx" class="sc-boton-secundario">Exportar XLSX</a>
     </div>
   </div>
 
@@ -35,7 +35,7 @@
                   <td><span class="sc-estado sc-estado--{{ alerta.estado|lower }}">{{ alerta.get_estado_display }}</span></td>
                   <td>
                     {% if alerta.estado == "PENDIENTE" %}
-                      <form method="post" action="{% url 'core:alerta_leer' alerta.pk %}">
+                      <form method="post" action="{% url 'identidad:alerta_leer' alerta.pk %}">
                         {% csrf_token %}
                         <button class="sc-boton-secundario" type="submit">Marcar leída</button>
                       </form>

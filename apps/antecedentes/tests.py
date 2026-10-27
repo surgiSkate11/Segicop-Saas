@@ -1383,18 +1383,25 @@ class PermisosAntecedentesTests(BaseAntecedentesTests):
 
     def test_la_lista_de_personas_ofrece_antecedentes_solo_a_quien_puede_operar(self):
         url_iniciar = reverse("antecedentes:iniciar", args=[self.persona.pk])
-        esperado = {self.operador: True, self.revisor2: True, self.garita: False}
-        for usuario, ve_boton in esperado.items():
+        for usuario in (self.operador, self.revisor2):
             with self.subTest(usuario=usuario.email):
                 self.client.force_login(usuario)
 
                 respuesta = self.client.get(reverse("personas:lista"))
 
                 self.assertEqual(respuesta.status_code, 200)
-                if ve_boton:
-                    self.assertContains(respuesta, url_iniciar)
-                else:
-                    self.assertNotContains(respuesta, url_iniciar)
+                self.assertContains(respuesta, url_iniciar)
+
+    def test_garita_no_abre_la_lista_de_personas_ni_ve_el_boton_de_antecedentes(self):
+        # Antes la lista se abría con cualquier rol y solo se ocultaba el botón; ahora garita recibe 403.
+        self.client.force_login(self.garita)
+
+        respuesta = self.client.get(reverse("personas:lista"))
+
+        self.assertEqual(respuesta.status_code, 403)
+        self.assertNotContains(
+            respuesta, reverse("antecedentes:iniciar", args=[self.persona.pk]), status_code=403
+        )
 
 
 class MigracionEstadosTests(TestCase):

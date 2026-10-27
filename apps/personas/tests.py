@@ -170,3 +170,94 @@ class PersonaVistasTests(TestCase):
         respuesta = self.client.post(reverse("personas:enviar_acceso", args=[ajena.pk]), **HTMX)
 
         self.assertEqual(respuesta.status_code, 404)
+
+
+def usuario_con_rol(organizacion, codigo, activo=True):
+    usuario = Usuario.objects.create_user(
+        email=f"{codigo}@cliente.com", nombre_completo=codigo, password="UnaClaveSegura123!"
+    )
+    rol, _ = Rol.objects.get_or_create(codigo=codigo, defaults={"nombre": codigo})
+    RolAsignado.objects.create(usuario=usuario, organizacion=organizacion, rol=rol, activo=activo)
+    return usuario
+
+
+class PersonaPermisosTests(TestCase):
+    """S3: las vistas de personas deniegan por defecto según la matriz de roles."""
+
+    def setUp(self):
+        self.organizacion = Organizacion.objects.create(nombre="Minera del Sur")
+        self.admin = preparar_staff(self.organizacion)
+        self.persona = registrar_persona(
+            organizacion=self.organizacion,
+            tipo_documento=TipoDocumento.CEDULA,
+            numero_documento=CEDULA,
+            nombres="Ana",
+            apellidos="Pérez",
+            actor=self.admin,
+        )
+        self.datos = {
+            "tipo_documento": TipoDocumento.CEDULA,
+            "numero_documento": "0922222222",
+            "nombres": "Luis",
+            "apellidos": "Mora",
+            "contacto_email": "luis@correo.com",
+        }
+
+    def _conteos(self):
+        return (Persona.objects.count(), Asignacion.objects.count(), Usuario.objects.count(), EventoAuditoria.objects.count())
+
+    def test_garita_no_ve_personas_ni_crea_ni_edita_ni_asigna_ni_envia_credenciales(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "seguridad_garita"))
+        antes = self._conteos()
+
+        self.assertEqual(self.client.get(reverse("personas:lista")).status_code, 403)
+        self.assertEqual(self.client.post(reverse("personas:crear"), self.datos, **HTMX).status_code, 403)
+        editar = reverse("personas:editar", args=[self.persona.pk])
+        self.assertEqual(self.client.post(editar, self.datos, **HTMX).status_code, 403)
+        asignar = reverse("personas:asignar", args=[self.persona.pk])
+        self.assertEqual(self.client.post(asignar, {}, **HTMX).status_code, 403)
+        enviar = reverse("personas:enviar_acceso", args=[self.persona.pk])
+        with self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(self.client.post(enviar, **HTMX).status_code, 403)
+
+        self.assertEqual(self._conteos(), antes)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_revisor_documental_ve_personas_pero_no_las_modifica(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "revisor_documental"))
+        antes = self._conteos()
+
+        self.assertEqual(self.client.get(reverse("personas:lista")).status_code, 200)
+        self.assertEqual(self.client.post(reverse("personas:crear"), self.datos, **HTMX).status_code, 403)
+        editar = reverse("personas:editar", args=[self.persona.pk])
+        self.assertEqual(self.client.post(editar, self.datos, **HTMX).status_code, 403)
+
+        self.assertEqual(self._conteos(), antes)
+
+    def test_gestor_registra_personas(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "gestor_contratista"))
+
+        with self.captureOnCommitCallbacks(execute=True):
+            respuesta = self.client.post(reverse("personas:crear"), self.datos, **HTMX)
+
+        self.assertEqual(respuesta.headers["HX-Redirect"], reverse("personas:lista"))
+        self.assertTrue(Persona.objects.filter(numero_documento="0922222222").exists())
+
+    def test_rol_inactivo_no_otorga_nada(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "gestor_contratista", activo=False))
+        antes = self._conteos()
+
+        self.assertEqual(self.client.get(reverse("personas:lista")).status_code, 403)
+        self.assertEqual(self.client.post(reverse("personas:crear"), self.datos, **HTMX).status_code, 403)
+
+        self.assertEqual(self._conteos(), antes)
+
+    def test_admin_cliente_conserva_todo_el_acceso(self):
+        self.client.force_login(self.admin)
+
+        self.assertEqual(self.client.get(reverse("personas:lista")).status_code, 200)
+        with self.captureOnCommitCallbacks(execute=True):
+            respuesta = self.client.post(reverse("personas:crear"), self.datos, **HTMX)
+        self.assertEqual(respuesta.headers["HX-Redirect"], reverse("personas:lista"))
+        asignar = reverse("personas:asignar", args=[self.persona.pk])
+        self.assertEqual(self.client.get(asignar, **HTMX).status_code, 200)

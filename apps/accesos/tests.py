@@ -1,13 +1,15 @@
 from datetime import date, timedelta
 
 from django.test import TestCase
+from django.urls import reverse
 from django.utils import timezone
 
-from apps.accesos.models import EstadoPermiso, EventoAcceso, TipoEvento
+from apps.accesos.models import EstadoPermiso, EventoAcceso, PermisoIngreso, TipoEvento
 from apps.accesos.services import calcular_habilitacion, registrar_evento_acceso, solicitar_permiso_ingreso
 from apps.antecedentes.models import EstadoVerificacion, ModoConector, ResultadoAntecedentes, VerificacionAntecedentes
 from apps.core.choices import EstadoCumplimiento
 from apps.core.exceptions import DomainError
+from apps.core.models import EventoAuditoria
 from apps.empresas.models import EmpresaContratista
 from apps.identidad.models import Instalacion, Organizacion, Rol, RolAsignado, Usuario
 from apps.personas.models import Asignacion, Persona, TipoDocumento
@@ -233,3 +235,118 @@ class GaritaTests(TestCase):
                 tipo=TipoEvento.ENTRADA,
                 actor=otro_usuario,
             )
+
+
+HTMX = {"HTTP_HX_REQUEST": "true"}
+
+
+def usuario_con_rol(organizacion, codigo, activo=True):
+    usuario = Usuario.objects.create_user(
+        email=f"{codigo}@cliente.com", nombre_completo=codigo, password="UnaClaveSegura123!"
+    )
+    rol, _ = Rol.objects.get_or_create(codigo=codigo, defaults={"nombre": codigo})
+    RolAsignado.objects.create(usuario=usuario, organizacion=organizacion, rol=rol, activo=activo)
+    return usuario
+
+
+class AccesosPermisosTests(TestCase):
+    """S3: las vistas de accesos deniegan por defecto según la matriz de roles."""
+
+    def setUp(self):
+        self.organizacion = Organizacion.objects.create(nombre="Cliente de accesos")
+        self.admin = usuario_con_rol(self.organizacion, "admin_cliente")
+        self.instalacion = Instalacion.objects.create(organizacion=self.organizacion, nombre="Garita norte")
+        self.persona = Persona.objects.create(
+            organizacion=self.organizacion,
+            tipo_documento=TipoDocumento.CEDULA,
+            numero_documento="0607080910",
+            nombres="Carlos",
+            apellidos="Acceso",
+        )
+        self.permiso = solicitar_permiso_ingreso(
+            persona=self.persona,
+            instalacion=self.instalacion,
+            actor=self.admin,
+            fecha_inicio_vigencia=date.today(),
+            fecha_fin_vigencia=date.today() + timedelta(days=1),
+        )
+        self.datos_solicitud = {
+            "instalacion": self.instalacion.pk,
+            "fecha_inicio_vigencia": date.today().isoformat(),
+            "fecha_fin_vigencia": (date.today() + timedelta(days=2)).isoformat(),
+        }
+        self.datos_garita = {
+            "codigo": str(self.permiso.codigo),
+            "instalacion": self.instalacion.pk,
+            "tipo": TipoEvento.ENTRADA,
+        }
+
+    def _conteos(self):
+        return (PermisoIngreso.objects.count(), EventoAcceso.objects.count(), EventoAuditoria.objects.count())
+
+    def _solicitar(self):
+        return self.client.post(reverse("accesos:solicitar", args=[self.persona.pk]), self.datos_solicitud, **HTMX)
+
+    def test_garita_solo_usa_la_garita(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "seguridad_garita"))
+        antes = self._conteos()
+
+        self.assertEqual(self.client.get(reverse("accesos:lista")).status_code, 403)
+        self.assertEqual(self.client.get(reverse("accesos:detalle", args=[self.permiso.pk])).status_code, 403)
+        self.assertEqual(self.client.get(reverse("accesos:solicitar", args=[self.persona.pk]), **HTMX).status_code, 403)
+        self.assertEqual(self._solicitar().status_code, 403)
+        self.assertEqual(self._conteos(), antes)
+
+        self.assertEqual(self.client.get(reverse("accesos:garita")).status_code, 200)
+        respuesta = self.client.post(reverse("accesos:garita"), self.datos_garita)
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertEqual(EventoAcceso.objects.count(), antes[1] + 1)
+
+    def test_responsable_de_area_solicita_ingreso_y_ve_permisos_pero_no_usa_la_garita(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "responsable_area"))
+
+        respuesta = self._solicitar()
+
+        self.assertEqual(PermisoIngreso.objects.count(), 2)
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertIn("HX-Redirect", respuesta.headers)
+        self.assertEqual(self.client.get(reverse("accesos:lista")).status_code, 200)
+        antes = self._conteos()
+        self.assertEqual(self.client.get(reverse("accesos:garita")).status_code, 403)
+        self.assertEqual(self.client.post(reverse("accesos:garita"), self.datos_garita).status_code, 403)
+        self.assertEqual(self._conteos(), antes)
+
+    def test_gestor_solicita_ingreso(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "gestor_contratista"))
+
+        self._solicitar()
+
+        self.assertEqual(PermisoIngreso.objects.count(), 2)
+
+    def test_revisor_documental_ve_permisos_pero_no_solicita(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "revisor_documental"))
+        antes = self._conteos()
+
+        self.assertEqual(self.client.get(reverse("accesos:lista")).status_code, 200)
+        self.assertEqual(self.client.get(reverse("accesos:detalle", args=[self.permiso.pk])).status_code, 200)
+        self.assertEqual(self._solicitar().status_code, 403)
+        self.assertEqual(self.client.get(reverse("accesos:garita")).status_code, 403)
+
+        self.assertEqual(self._conteos(), antes)
+
+    def test_rol_inactivo_no_otorga_nada(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "responsable_area", activo=False))
+        antes = self._conteos()
+
+        self.assertEqual(self._solicitar().status_code, 403)
+        self.assertEqual(self.client.get(reverse("accesos:lista")).status_code, 403)
+
+        self.assertEqual(self._conteos(), antes)
+
+    def test_admin_cliente_solicita_y_consulta_pero_la_garita_es_solo_del_rol_de_garita(self):
+        self.client.force_login(self.admin)
+
+        self._solicitar()
+        self.assertEqual(PermisoIngreso.objects.count(), 2)
+        self.assertEqual(self.client.get(reverse("accesos:lista")).status_code, 200)
+        self.assertEqual(self.client.get(reverse("accesos:garita")).status_code, 403)
