@@ -11,7 +11,9 @@ from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, render
 from django.views import View
 
+from apps.accesos.models import EstadoPermiso, TipoEvento
 from apps.empresas.models import EmpresaContratista
+from apps.identidad.models import Instalacion
 from apps.identidad.mixins import RequierePermisoMixin
 from apps.personas.models import Persona
 from apps.reportes import services
@@ -25,6 +27,9 @@ REPORTES = {
         "url_excel": "reportes:documentos_trabajadores_excel",
         "archivo": "documentos_trabajadores.xlsx",
         "con_fechas": True,
+        "etiqueta_fechas": "Caduca",
+        "placeholder": "Cédula, nombre o documento",
+        "funcion": services.documentos_trabajadores,
     },
     "informacion": {
         "codigo": services.INFORMACION_TRABAJADORES,
@@ -34,6 +39,35 @@ REPORTES = {
         "url_excel": "reportes:informacion_trabajadores_excel",
         "archivo": "informacion_trabajadores.xlsx",
         "con_fechas": False,
+        "funcion": services.informacion_trabajadores,
+    },
+    "solicitudes": {
+        "codigo": services.SOLICITUDES_INGRESO,
+        "titulo": "Solicitudes de ingreso",
+        "descripcion": "Cada permiso de ingreso solicitado, con planta, estado, vigencia y aprobador.",
+        "url": "reportes:solicitudes_ingreso",
+        "url_excel": "reportes:solicitudes_ingreso_excel",
+        "archivo": "solicitudes_ingreso.xlsx",
+        "con_fechas": True,
+        "etiqueta_fechas": "Solicitada",
+        "con_planta": True,
+        "estados": EstadoPermiso.choices,
+        "etiqueta_estado": "Estado",
+        "funcion": services.solicitudes_ingreso,
+    },
+    "accesos": {
+        "codigo": services.HISTORICO_ACCESOS,
+        "titulo": "Histórico de accesos",
+        "descripcion": "Cada entrada, salida o ingreso denegado registrado en garita.",
+        "url": "reportes:historico_accesos",
+        "url_excel": "reportes:historico_accesos_excel",
+        "archivo": "historico_accesos.xlsx",
+        "con_fechas": True,
+        "etiqueta_fechas": "Registrado",
+        "con_planta": True,
+        "estados": TipoEvento.choices,
+        "etiqueta_estado": "Tipo",
+        "funcion": services.historico_accesos,
     },
 }
 
@@ -58,22 +92,34 @@ class _ReporteMixin(RequierePermisoMixin):
     def definicion(self):
         return REPORTES[self.reporte]
 
-    def filtros(self):
+    def filtros(self, organizaciones_ids):
         """Validated filters; invalid values are ignored (they never widen what the user can see)."""
+        definicion = self.definicion()
         empresa = _uuid(self.request.GET.get("empresa"))
         filtros = {"empresa": str(empresa) if empresa else None, "q": self.request.GET.get("q", "").strip()}
-        if self.definicion()["con_fechas"]:
+        if definicion["con_fechas"]:
             desde, hasta = _fecha(self.request.GET.get("desde")), _fecha(self.request.GET.get("hasta"))
-            filtros.update({"desde": desde.isoformat() if desde else None, "hasta": hasta.isoformat() if hasta else None})
+            filtros.update(
+                {"desde": desde.isoformat() if desde else None, "hasta": hasta.isoformat() if hasta else None}
+            )
+        if definicion.get("con_planta"):
+            planta = _uuid(self.request.GET.get("planta"))
+            valida = planta and Instalacion.objects.filter(pk=planta, organizacion_id__in=organizaciones_ids).exists()
+            filtros["planta"] = str(planta) if valida else None
+        if definicion.get("estados"):
+            estado = self.request.GET.get("estado")
+            filtros["estado"] = estado if estado in dict(definicion["estados"]) else None
         return filtros
 
     def filas(self, organizaciones_ids, filtros):
         argumentos = {"organizaciones_ids": organizaciones_ids, "empresa_id": filtros["empresa"], "q": filtros["q"]}
-        if self.reporte == "documentos":
-            return services.documentos_trabajadores(
-                **argumentos, desde=_fecha(filtros["desde"]), hasta=_fecha(filtros["hasta"])
-            )
-        return services.informacion_trabajadores(**argumentos)
+        if "desde" in filtros:
+            argumentos.update(desde=_fecha(filtros["desde"]), hasta=_fecha(filtros["hasta"]))
+        if "planta" in filtros:
+            argumentos["planta_id"] = filtros["planta"]
+        if "estado" in filtros:
+            argumentos["estado"] = filtros["estado"]
+        return self.definicion()["funcion"](**argumentos)
 
 
 class IndiceReportesView(RequierePermisoMixin, View):
@@ -88,7 +134,7 @@ class ReporteView(_ReporteMixin, View):
 
     def get(self, request):
         organizaciones_ids = list(self.organizaciones_permitidas())
-        filtros = self.filtros()
+        filtros = self.filtros(organizaciones_ids)
         filas = self.filas(organizaciones_ids, filtros)
         pagina = Paginator(filas, 50).get_page(request.GET.get("page"))
         contexto = {
@@ -101,6 +147,7 @@ class ReporteView(_ReporteMixin, View):
             "empresas": EmpresaContratista.objects.filter(organizacion_id__in=organizaciones_ids).order_by(
                 "razon_social"
             ),
+            "plantas": Instalacion.objects.filter(organizacion_id__in=organizaciones_ids).order_by("nombre"),
             "consulta": request.GET.urlencode(),
         }
         return render(request, "reportes/reporte.html", contexto)
@@ -125,7 +172,7 @@ class ExportarReporteView(_ReporteMixin, View):
 
     def get(self, request):
         organizaciones_ids = list(self.organizaciones_permitidas())
-        filtros = self.filtros()
+        filtros = self.filtros(organizaciones_ids)
         contenido, _ = services.exportar_xlsx(
             reporte=self.definicion()["codigo"],
             filas=self.filas(organizaciones_ids, filtros),

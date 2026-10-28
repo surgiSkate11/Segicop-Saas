@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load reportes_tags %}
 {% block titulo %}{{ reporte.titulo }} · SIGECOP{% endblock %}
 {% block nav_reportes %}activo{% endblock %}
 {% block migas %}<a href="{% url 'reportes:indice' %}">Reportes</a> <span class="sc-migas__sep">/</span> <strong>{{ reporte.titulo }}</strong>{% endblock %}
@@ -25,13 +26,35 @@
         {% endfor %}
       </select>
     </label>
+    {% if reporte.con_planta %}
+      <label class="grid gap-1">
+        <span>Planta</span>
+        <select name="planta" class="sc-input">
+          <option value="">Todas</option>
+          {% for planta in plantas %}
+            <option value="{{ planta.pk }}" {% if filtros.planta == planta.pk|stringformat:"s" %}selected{% endif %}>{{ planta.nombre }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    {% endif %}
+    {% if reporte.estados %}
+      <label class="grid gap-1">
+        <span>{{ reporte.etiqueta_estado }}</span>
+        <select name="estado" class="sc-input">
+          <option value="">Todos</option>
+          {% for valor, etiqueta in reporte.estados %}
+            <option value="{{ valor }}" {% if filtros.estado == valor %}selected{% endif %}>{{ etiqueta }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    {% endif %}
     {% if reporte.con_fechas %}
-      <label class="grid gap-1"><span>Caduca desde</span><input type="date" name="desde" value="{{ filtros.desde|default:'' }}" class="sc-input"></label>
-      <label class="grid gap-1"><span>Caduca hasta</span><input type="date" name="hasta" value="{{ filtros.hasta|default:'' }}" class="sc-input"></label>
+      <label class="grid gap-1"><span>{{ reporte.etiqueta_fechas }} desde</span><input type="date" name="desde" value="{{ filtros.desde|default:'' }}" class="sc-input"></label>
+      <label class="grid gap-1"><span>{{ reporte.etiqueta_fechas }} hasta</span><input type="date" name="hasta" value="{{ filtros.hasta|default:'' }}" class="sc-input"></label>
     {% endif %}
     <label class="grid gap-1 grow">
       <span>Buscar</span>
-      <input type="search" name="q" value="{{ filtros.q }}" placeholder="Cédula, nombre{% if reporte.con_fechas %} o documento{% endif %}" class="sc-input">
+      <input type="search" name="q" value="{{ filtros.q }}" placeholder="{{ reporte.placeholder|default:'Cédula o nombre' }}" class="sc-input">
     </label>
     <button type="submit" class="sc-boton-primario">Buscar</button>
     <a href="{% url reporte.url %}" class="sc-boton-secundario">Limpiar</a>
@@ -44,28 +67,7 @@
         <thead><tr>{% for clave, etiqueta in columnas %}<th>{{ etiqueta }}</th>{% endfor %}</tr></thead>
         <tbody>
           {% for fila in filas %}
-            <tr>
-              <td><span class="sc-dato-mono">{{ fila.cedula }}</span></td>
-              <td>{{ fila.trabajador }}</td>
-              <td>{{ fila.empresa|default:"—" }}</td>
-              {% if reporte.con_fechas %}
-                <td>{{ fila.documento }}</td>
-                <td>{{ fila.estado }}</td>
-                <td>{{ fila.fecha_emision|date:"d/m/Y"|default:"—" }}</td>
-                <td>{{ fila.fecha_caducidad|date:"d/m/Y"|default:"—" }}</td>
-              {% else %}
-                <td><span class="sc-dato-mono">{{ fila.ruc|default:"—" }}</span></td>
-                <td>{{ fila.cargo|default:"—" }}</td>
-                <td>{{ fila.estado_documental }}</td>
-                <td>{{ fila.habilitado }}</td>
-                <td>{{ fila.fecha_nacimiento|date:"d/m/Y"|default:"—" }}</td>
-                <td>{{ fila.nacionalidad|default:"—" }}</td>
-                <td>{{ fila.domicilio|default:"—" }}</td>
-                <td>{{ fila.correo|default:"—" }}</td>
-                <td>{{ fila.telefono|default:"—" }}</td>
-                <td>{{ fila.telefono_emergencia|default:"—" }}</td>
-              {% endif %}
-            </tr>
+            <tr>{% for clave, etiqueta in columnas %}<td>{{ fila|celda:clave }}</td>{% endfor %}</tr>
           {% endfor %}
         </tbody>
       </table>

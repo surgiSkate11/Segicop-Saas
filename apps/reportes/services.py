@@ -9,10 +9,13 @@ The worker information report shows enablement (Sí/No) and NEVER the antecedent
 
 import hashlib
 import io
+from datetime import datetime, time, timedelta
 
 from django.db.models import Prefetch, Q
+from django.utils import timezone
 from openpyxl import Workbook
 
+from apps.accesos.models import EventoAcceso, PermisoIngreso
 from apps.accesos.services import calcular_habilitacion
 from apps.core.events import emitir_evento
 from apps.core.models import ExportacionAuditoria
@@ -22,6 +25,8 @@ from apps.personas.models import Asignacion, Persona
 
 DOCUMENTOS_TRABAJADORES = "DOCUMENTOS_TRABAJADORES"
 INFORMACION_TRABAJADORES = "INFORMACION_TRABAJADORES"
+SOLICITUDES_INGRESO = "SOLICITUDES_INGRESO"
+HISTORICO_ACCESOS = "HISTORICO_ACCESOS"
 
 COLUMNAS = {
     DOCUMENTOS_TRABAJADORES: [
@@ -48,15 +53,36 @@ COLUMNAS = {
         ("telefono", "Teléfono"),
         ("telefono_emergencia", "Teléfono de emergencia"),
     ],
+    SOLICITUDES_INGRESO: [
+        ("fecha_solicitud", "Fecha de solicitud"),
+        ("cedula", "Cédula"),
+        ("trabajador", "Trabajador"),
+        ("empresa", "Contratista"),
+        ("planta", "Planta"),
+        ("estado", "Estado"),
+        ("vigencia_desde", "Vigente desde"),
+        ("vigencia_hasta", "Vigente hasta"),
+        ("aprobado_por", "Aprobado por"),
+    ],
+    HISTORICO_ACCESOS: [
+        ("fecha_hora", "Fecha y hora"),
+        ("cedula", "Cédula"),
+        ("trabajador", "Trabajador"),
+        ("empresa", "Contratista"),
+        ("planta", "Planta"),
+        ("tipo", "Tipo"),
+        ("motivo", "Motivo de denegación"),
+        ("registrado_por", "Registrado por"),
+    ],
 }
 
 
+def _activas_qs():
+    return Asignacion.objects.filter(activa=True).select_related("empresa").order_by("fecha_inicio", "created_at")
+
+
 def _asignaciones_activas():
-    return Prefetch(
-        "asignaciones",
-        queryset=Asignacion.objects.filter(activa=True).select_related("empresa").order_by("fecha_inicio", "created_at"),
-        to_attr="activas",
-    )
+    return Prefetch("asignaciones", queryset=_activas_qs(), to_attr="activas")
 
 
 def _buscar_persona(q, prefijo=""):
@@ -92,7 +118,7 @@ def documentos_trabajadores(*, organizaciones_ids, empresa_id=None, desde=None, 
                 queryset=DocumentoVersion.objects.filter(vigente=True).prefetch_related("revisiones"),
                 to_attr="vigentes",
             ),
-            Prefetch("persona__asignaciones", queryset=Asignacion.objects.filter(activa=True).select_related("empresa")),
+            Prefetch("persona__asignaciones", queryset=_activas_qs()),
         )
         .order_by("persona__apellidos", "persona__nombres", "catalogo__nombre")
     )
@@ -148,6 +174,84 @@ def informacion_trabajadores(*, organizaciones_ids, empresa_id=None, q=""):
             }
         )
     return filas
+
+
+def _empresa_activa(persona):
+    asignacion = persona.activas[0] if persona.activas else None
+    return asignacion.empresa.razon_social if asignacion else ""
+
+
+def _filtrar_ingreso(queryset, *, empresa_id, planta_id, desde, hasta, q):
+    """Shared filters of the entry reports. Dates compare the local (America/Guayaquil) day of `created_at`."""
+    if empresa_id:
+        queryset = queryset.filter(persona__asignaciones__empresa_id=empresa_id, persona__asignaciones__activa=True)
+    if planta_id:
+        queryset = queryset.filter(instalacion_id=planta_id)
+    if desde:
+        queryset = queryset.filter(created_at__gte=_inicio_del_dia(desde))
+    if hasta:
+        queryset = queryset.filter(created_at__lt=_inicio_del_dia(hasta + timedelta(days=1)))
+    return queryset.filter(_buscar_persona(q, "persona__")).distinct()
+
+
+def _inicio_del_dia(dia):
+    """Local midnight of `dia` as an aware datetime (the business day is America/Guayaquil, RN-005)."""
+    return timezone.make_aware(datetime.combine(dia, time.min))
+
+
+def solicitudes_ingreso(*, organizaciones_ids, empresa_id=None, planta_id=None, estado=None, desde=None, hasta=None,
+                        q=""):
+    """One row per entry permit (request), newest first."""
+    permisos = PermisoIngreso.objects.filter(organizacion_id__in=organizaciones_ids)
+    if estado:
+        permisos = permisos.filter(estado=estado)
+    permisos = (
+        _filtrar_ingreso(permisos, empresa_id=empresa_id, planta_id=planta_id, desde=desde, hasta=hasta, q=q)
+        .select_related("persona", "instalacion", "aprobado_por")
+        .prefetch_related(Prefetch("persona__asignaciones", queryset=_activas_qs(), to_attr="activas"))
+        .order_by("-created_at")
+    )
+    return [
+        {
+            "fecha_solicitud": timezone.localdate(permiso.created_at),
+            "cedula": permiso.persona.numero_documento,
+            "trabajador": permiso.persona.nombre_completo,
+            "empresa": _empresa_activa(permiso.persona),
+            "planta": permiso.instalacion.nombre,
+            "estado": permiso.get_estado_display(),
+            "vigencia_desde": permiso.fecha_inicio_vigencia,
+            "vigencia_hasta": permiso.fecha_fin_vigencia,
+            "aprobado_por": permiso.aprobado_por.nombre_completo if permiso.aprobado_por else "",
+        }
+        for permiso in permisos
+    ]
+
+
+def historico_accesos(*, organizaciones_ids, empresa_id=None, planta_id=None, estado=None, desde=None, hasta=None,
+                      q=""):
+    """One row per gate event (entry, exit or denial), newest first. `estado` filters the event type."""
+    eventos = EventoAcceso.objects.filter(instalacion__organizacion_id__in=organizaciones_ids)
+    if estado:
+        eventos = eventos.filter(tipo=estado)
+    eventos = (
+        _filtrar_ingreso(eventos, empresa_id=empresa_id, planta_id=planta_id, desde=desde, hasta=hasta, q=q)
+        .select_related("persona", "instalacion", "registrado_por")
+        .prefetch_related(Prefetch("persona__asignaciones", queryset=_activas_qs(), to_attr="activas"))
+        .order_by("-created_at")
+    )
+    return [
+        {
+            "fecha_hora": timezone.localtime(evento.created_at).replace(tzinfo=None),
+            "cedula": evento.persona.numero_documento,
+            "trabajador": evento.persona.nombre_completo,
+            "empresa": _empresa_activa(evento.persona),
+            "planta": evento.instalacion.nombre,
+            "tipo": evento.get_tipo_display(),
+            "motivo": evento.motivo_denegacion,
+            "registrado_por": evento.registrado_por.nombre_completo,
+        }
+        for evento in eventos
+    ]
 
 
 def exportar_xlsx(*, reporte, filas, actor, organizaciones_ids, filtros):
@@ -214,7 +318,7 @@ def expediente_persona(persona):
         )
     documentos = DocumentoVersion.objects.filter(requisito_aplicado__persona=persona).select_related(
         "requisito_aplicado__catalogo"
-    )
+    ).prefetch_related("revisiones")
     for documento in documentos:
         nombre = documento.requisito_aplicado.catalogo.nombre
         agregar(documento.created_at, "Documento cargado", f"{nombre} (versión {documento.version})")

@@ -26,5 +26,17 @@ urlpatterns = [
         ExportarReporteView.as_view(reporte="informacion"),
         name="informacion_trabajadores_excel",
     ),
+    path("reportes/solicitudes-ingreso/", ReporteView.as_view(reporte="solicitudes"), name="solicitudes_ingreso"),
+    path(
+        "reportes/solicitudes-ingreso.xlsx",
+        ExportarReporteView.as_view(reporte="solicitudes"),
+        name="solicitudes_ingreso_excel",
+    ),
+    path("reportes/historico-accesos/", ReporteView.as_view(reporte="accesos"), name="historico_accesos"),
+    path(
+        "reportes/historico-accesos.xlsx",
+        ExportarReporteView.as_view(reporte="accesos"),
+        name="historico_accesos_excel",
+    ),
     path("reportes/personas/<uuid:pk>/expediente/", ExpedientePersonaView.as_view(), name="expediente_persona"),
 ]
