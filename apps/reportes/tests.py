@@ -17,7 +17,7 @@ from apps.personas.models import Asignacion, Persona, TipoDocumento
 
 COLUMNAS_INFORMACION = {
     "cedula", "trabajador", "empresa", "ruc", "cargo", "estado_documental", "habilitado",
-    "fecha_nacimiento", "correo", "telefono",
+    "fecha_nacimiento", "nacionalidad", "domicilio", "correo", "telefono", "telefono_emergencia",
 }
 
 
@@ -131,6 +131,20 @@ class ReportesTests(TestCase):
         self.assertEqual(filas["0911111111"]["ruc"], "1790000000011")
         self.assertNotContains(respuesta, "Antecedentes")
 
+    def test_informacion_de_trabajadores_muestra_los_campos_del_sistema_anterior_en_cada_fila(self):
+        """T13 / S11: each header has its cell (the table is not misaligned)."""
+        Persona.objects.filter(pk=self.ana.pk).update(
+            nacionalidad="Peruana", domicilio="Av. Quito 123", telefono_emergencia="0998887777"
+        )
+
+        respuesta = self._get("informacion_trabajadores", q="ana")
+
+        for valor in ("Peruana", "Av. Quito 123", "0998887777"):
+            self.assertContains(respuesta, f"<td>{valor}</td>", html=True)
+        html = respuesta.content.decode()
+        cabecera, cuerpo = html.split("<tbody>")
+        self.assertEqual(cabecera.count("<th>"), cuerpo.split("</tr>")[0].count("<td>"))
+
     def test_filtros_por_empresa_y_palabra_clave(self):
         filas = self._get("informacion_trabajadores", empresa=str(self.pacifico.pk)).context["filas"]
         self.assertEqual([fila["cedula"] for fila in filas], ["0911111111"])
@@ -196,3 +210,4 @@ class ReportesTests(TestCase):
 
         self.assertEqual(sorted(cedulas), ["0102030405", "0911111111"])
         self.assertNotIn("Antecedentes", [celda.value for celda in hoja[1]])
+

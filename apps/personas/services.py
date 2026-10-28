@@ -71,7 +71,14 @@ def asignar_persona_a_empresa(
     return asignacion
 
 
-_CAMPOS_EDITABLES_PERSONA = ("fecha_nacimiento", "contacto_telefono", "contacto_email")
+_CAMPOS_EDITABLES_PERSONA = (
+    "fecha_nacimiento",
+    "contacto_telefono",
+    "contacto_email",
+    "nacionalidad",
+    "domicilio",
+    "telefono_emergencia",
+)
 
 
 @transaction.atomic

@@ -139,6 +139,35 @@ class PersonaVistasTests(TestCase):
 
         self.assertEqual(respuesta.headers["HX-Redirect"], reverse("personas:lista"))
 
+    def test_registrar_y_editar_guardan_nacionalidad_domicilio_y_telefono_de_emergencia(self):
+        """T13 / S11: campos del sistema anterior."""
+        extra = {"nacionalidad": "Ecuatoriana", "domicilio": "Av. Quito 123", "telefono_emergencia": "0991234567"}
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.post(
+                reverse("personas:crear"), {**self.datos, "contacto_email": "ana@correo.com", **extra}, **HTMX
+            )
+        persona = Persona.objects.get()
+        self.assertEqual(
+            (persona.nacionalidad, persona.domicilio, persona.telefono_emergencia),
+            ("Ecuatoriana", "Av. Quito 123", "0991234567"),
+        )
+
+        formulario = self.client.get(reverse("personas:editar", args=[persona.pk]), **HTMX)
+        self.assertContains(formulario, 'value="Av. Quito 123"')
+
+        respuesta = self.client.post(
+            reverse("personas:editar", args=[persona.pk]),
+            {**self.datos, "contacto_email": "ana@correo.com", **extra, "domicilio": "Calle 10",
+             "telefono_emergencia": ""},
+            **HTMX,
+        )
+
+        self.assertEqual(respuesta.headers["HX-Redirect"], reverse("personas:lista"))
+        persona.refresh_from_db()
+        self.assertEqual(
+            (persona.nacionalidad, persona.domicilio, persona.telefono_emergencia), ("Ecuatoriana", "Calle 10", "")
+        )
+
     def test_lista_muestra_estado_del_acceso_y_accion_de_envio(self):
         persona = registrar_persona(
             organizacion=self.organizacion, actor=self.staff, contacto_email="ana@correo.com", **self.datos

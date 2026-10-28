@@ -59,8 +59,11 @@
                 <td>{{ fila.estado_documental }}</td>
                 <td>{{ fila.habilitado }}</td>
                 <td>{{ fila.fecha_nacimiento|date:"d/m/Y"|default:"—" }}</td>
+                <td>{{ fila.nacionalidad|default:"—" }}</td>
+                <td>{{ fila.domicilio|default:"—" }}</td>
                 <td>{{ fila.correo|default:"—" }}</td>
                 <td>{{ fila.telefono|default:"—" }}</td>
+                <td>{{ fila.telefono_emergencia|default:"—" }}</td>
               {% endif %}
             </tr>
           {% endfor %}

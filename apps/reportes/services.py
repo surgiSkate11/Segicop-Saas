@@ -42,8 +42,11 @@ COLUMNAS = {
         ("estado_documental", "Estado documental"),
         ("habilitado", "Habilitado"),
         ("fecha_nacimiento", "Fecha de nacimiento"),
+        ("nacionalidad", "Nacionalidad"),
+        ("domicilio", "Domicilio"),
         ("correo", "Correo"),
         ("telefono", "Teléfono"),
+        ("telefono_emergencia", "Teléfono de emergencia"),
     ],
 }
 
@@ -137,8 +140,11 @@ def informacion_trabajadores(*, organizaciones_ids, empresa_id=None, q=""):
                 "estado_documental": persona.get_estado_display(),
                 "habilitado": "Sí" if calcular_habilitacion(persona).habilitado else "No",
                 "fecha_nacimiento": persona.fecha_nacimiento,
+                "nacionalidad": persona.nacionalidad,
+                "domicilio": persona.domicilio,
                 "correo": persona.contacto_email,
                 "telefono": persona.contacto_telefono,
+                "telefono_emergencia": persona.telefono_emergencia,
             }
         )
     return filas
@@ -182,3 +188,4 @@ def exportar_xlsx(*, reporte, filas, actor, organizaciones_ids, filtros):
         metadata={"filas": len(filas), "formato": "XLSX", "filtros": filtros},
     )
     return contenido, exportacion
+

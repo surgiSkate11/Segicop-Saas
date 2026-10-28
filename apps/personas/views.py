@@ -72,6 +72,9 @@ class PersonaModalView(_ModalView):
                 "fecha_nacimiento": persona.fecha_nacimiento,
                 "contacto_telefono": persona.contacto_telefono,
                 "contacto_email": persona.contacto_email,
+                "nacionalidad": persona.nacionalidad,
+                "domicilio": persona.domicilio,
+                "telefono_emergencia": persona.telefono_emergencia,
             }
         return self._modal(request, PersonaForm(initial=initial, creando=persona is None), persona)
 
