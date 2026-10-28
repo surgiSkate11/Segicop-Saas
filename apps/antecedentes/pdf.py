@@ -49,13 +49,13 @@ class DocumentoInvalido(DomainError):
         self.documento = documento
 
 
-def validar_entrada(archivo):
+def validar_entrada(archivo, extensiones=(".pdf",)):
     """Nombre y tamaño; lo que falla aquí ni siquiera se guarda."""
     nombre = str(archivo.name or "")
     if (
         "\x00" in nombre
         or any(ord(caracter) < 32 for caracter in nombre)
-        or not nombre.lower().endswith(".pdf")
+        or not nombre.lower().endswith(tuple(extensiones))
         or len(nombre) > 255
     ):
         return "El nombre del archivo no es válido."

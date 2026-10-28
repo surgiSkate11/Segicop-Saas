@@ -9,7 +9,8 @@ from django.urls import reverse
 from django.views import View
 from django.views.generic import ListView
 
-from apps.antecedentes import maquina_estados, permisos, services
+from apps.antecedentes import evidencia, maquina_estados, permisos, services
+from apps.antecedentes.conectores import funcion_judicial
 from apps.antecedentes.forms import (
     AutorizacionDatosForm,
     RegistrarResultadoManualForm,
@@ -116,6 +117,13 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
             "autorizacion": verificacion.autorizacion,
             "espera_autorizacion": verificacion.estado == EstadoVerificacion.AUTORIZACION_PENDIENTE,
             "puede_cargar": verificacion.estado in maquina_estados.ESTADOS_CARGA_MANUAL,
+            "puede_cargar_judicial": verificacion.estado in services.ESTADOS_EVIDENCIA_JUDICIAL,
+            "satje_url": funcion_judicial.PORTAL_URL,
+            "acepta_evidencia_judicial": evidencia.ACEPTA,
+            # Como el certificado, la evidencia judicial solo la ve el revisor.
+            "evidencias_judiciales": services.evidencias_judiciales(verificacion).order_by("created_at")
+            if es_revisor
+            else (),
             "consulta_asistida": verificacion.estado in (EstadoVerificacion.CAPTCHA_REQUERIDO, EstadoVerificacion.EN_CONSULTA)
             and verificacion.modo_conector == ModoConector.ASISTIDO,
             "reintentar_desde": services.reintentar_desde(verificacion),
@@ -146,6 +154,8 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
                 messages.success(request, "Se volvió a consultar el portal oficial.")
             elif accion == "cargar_certificado":
                 self._cargar_certificado(request, verificacion)
+            elif accion == "cargar_evidencia_judicial":
+                self._cargar_evidencia_judicial(request, verificacion)
             elif accion == "cargar_resultado":
                 self._cargar_resultado(request, verificacion)
             elif accion == "validar":
@@ -158,9 +168,25 @@ class VerificacionDetalleView(LoginRequiredMixin, View):
 
     @staticmethod
     def _ultimo_documento(verificacion):
-        return (
-            DocumentoAntecedentes.objects.filter(consulta__verificacion=verificacion).order_by("-created_at").first()
-        )
+        return services.certificados_del_ministerio(verificacion).order_by("-created_at").first()
+
+    def _cargar_evidencia_judicial(self, request, verificacion):
+        archivo = request.FILES.get("archivo")
+        if not archivo:
+            messages.error(request, "Selecciona la captura o el PDF de la búsqueda en e-SATJE.")
+            return
+        try:
+            _, creado = services.cargar_evidencia_judicial(
+                verificacion=verificacion, archivo=archivo, actor=request.user
+            )
+        except DocumentoInvalido as error:
+            sufijo = f" {MENSAJE_CUARENTENA}" if error.documento else ""
+            messages.error(request, f"{error}{sufijo}")
+            return
+        if not creado:
+            messages.info(request, "Esa evidencia ya estaba cargada.")
+        else:
+            messages.success(request, "Evidencia de la Función Judicial recibida. Un revisor de antecedentes la decidirá.")
 
     def _cargar_certificado(self, request, verificacion):
         archivo = request.FILES.get("archivo")
@@ -331,8 +357,9 @@ class DescargarDocumentoView(LoginRequiredMixin, View):
         except (ValueError, OSError):
             raise Http404("El archivo no está disponible.")
         services.registrar_descarga(usuario=request.user, documento=documento)
-        nombre = os.path.basename(documento.nombre_original) or f"certificado-{documento.pk}.pdf"
-        respuesta = FileResponse(archivo, as_attachment=True, filename=nombre, content_type="application/pdf")
+        tipo = documento.mime_type or "application/pdf"
+        nombre = os.path.basename(documento.nombre_original) or f"certificado-{documento.pk}{evidencia.extension(tipo)}"
+        respuesta = FileResponse(archivo, as_attachment=True, filename=nombre, content_type=tipo)
         respuesta["X-Content-Type-Options"] = "nosniff"
         respuesta["Cache-Control"] = "private, no-store"
         return respuesta
