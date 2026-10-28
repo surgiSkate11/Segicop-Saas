@@ -559,6 +559,18 @@ class UsuariosInternosTests(TestCase):
         rol_asignado.refresh_from_db()
         self.assertTrue(rol_asignado.activo)
 
+    def test_desactivar_un_rol_ya_inactivo_no_repite_la_auditoria(self):
+        usuario = usuario_interno("revisor@cliente.com")
+        rol_asignado = asignar_rol(usuario, self.organizacion, "revisor_documental", activo=False)
+        antes = EventoAuditoria.objects.count()
+
+        respuesta = self.client.post(
+            reverse("identidad:desactivar_rol", args=[rol_asignado.pk]), {"motivo": "Otra vez"}, **self.HTMX
+        )
+
+        self.assertContains(respuesta, "ya está desactivado")
+        self.assertEqual(EventoAuditoria.objects.count(), antes)
+
     def test_no_puede_desactivar_su_propio_rol_de_administrador(self):
         respuesta = self.client.post(
             reverse("identidad:desactivar_rol", args=[self.rol_admin.pk]), {"motivo": "Prueba"}, **self.HTMX

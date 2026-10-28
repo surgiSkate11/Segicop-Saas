@@ -83,6 +83,8 @@ def desactivar_rol_interno(*, rol_asignado: RolAsignado, actor: Usuario, motivo:
     motivo = (motivo or "").strip()
     if not motivo:
         raise DomainError("Indica el motivo de la desactivación.")
+    if not rol_asignado.activo:
+        raise DomainError("Ese rol ya está desactivado.")
     if rol_asignado.usuario_id == actor.pk and rol_asignado.rol.codigo == ADMIN_CLIENTE:
         raise DomainError("No puedes desactivar tu propio rol de administrador.")
     revocar_rol(rol_asignado=rol_asignado, actor=actor, motivo=motivo)

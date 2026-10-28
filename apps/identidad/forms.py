@@ -1,6 +1,6 @@
+from django import forms
 from django.contrib.auth.forms import AuthenticationForm, SetPasswordForm
 from django.core.exceptions import ValidationError
-from django import forms
 from django.forms import CharField, PasswordInput, TextInput
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
