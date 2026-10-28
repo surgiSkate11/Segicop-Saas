@@ -7,6 +7,7 @@ de entorno (django-environ).
 from pathlib import Path
 
 import environ
+from celery.schedules import crontab
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -135,12 +136,18 @@ ANTECEDENTES_PRIVATE_ROOT = BASE_DIR / "privado" / "antecedentes"
 CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default="redis://localhost:6379/1")
 CELERY_TIMEZONE = TIME_ZONE
+# Job diario a hora fija (America/Guayaquil): un intervalo de 86400 s dependía de cuándo arrancó beat.
+SIGECOP_JOB_DIARIO_HORA = env.int("SIGECOP_JOB_DIARIO_HORA", default=6)
 CELERY_BEAT_SCHEDULE = {
     "procesar-vencimientos-diario": {
         "task": "apps.core.tasks.procesar_vencimientos",
-        "schedule": 86400.0,
+        "schedule": crontab(hour=SIGECOP_JOB_DIARIO_HORA, minute=0),
     },
 }
+# RF-033: días antes del vencimiento en que se avisa (umbrales configurables; valores por confirmar, P21).
+SIGECOP_DIAS_AVISO_VENCIMIENTO = tuple(
+    sorted({int(dias) for dias in env.list("SIGECOP_DIAS_AVISO_VENCIMIENTO", default=["30", "7"])}, reverse=True)
+)
 
 # Antecedentes penales (consulta asistida al portal oficial; nunca se resuelve el CAPTCHA).
 # "asistido": comprueba el portal y deja el caso listo para que una persona lo consulte; "manual": solo carga manual.

@@ -283,7 +283,7 @@ class MatrizDePermisosTests(TestCase):
                 "ver_registros", "editar_registros", "enviar_credenciales", "configurar_catalogo",
                 "asignar_requisitos", "subir_documentos", "revisar_documentos", "solicitar_ingreso",
                 "aprobar_ingreso", "crear_trabajo", "gestionar_trabajo", "ver_alertas", "exportar_reportes",
-                "gestionar_usuarios",
+                "gestionar_usuarios", "recibir_resumen_alertas",
             },
             "gestor_contratista": {
                 "ver_registros", "editar_registros", "enviar_credenciales", "asignar_requisitos",

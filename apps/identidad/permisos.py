@@ -58,6 +58,8 @@ PERMISOS = {
     ),
     "exportar_reportes": frozenset({ADMIN_CLIENTE}),
     "gestionar_usuarios": frozenset({ADMIN_CLIENTE}),
+    # T5 / P21: resumen diario de alertas por correo. Solo el administrador hasta que el director decida.
+    "recibir_resumen_alertas": frozenset({ADMIN_CLIENTE}),
 }
 
 

@@ -46,6 +46,7 @@ Se derivó solo de la tabla de roles de los requerimientos. ✅ = permitido, —
 | Ver alertas | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | Exportar reportes | ✅ | — | — | — | — | — | — |
 | Gestionar usuarios internos y roles | ✅ | — | — | — | — | — | — |
+| Recibir el resumen diario de alertas por correo | ✅ | — | — | — | — | — | — |
 
 Para confirmar en particular: ¿el administrador del cliente aprueba documentos, o solo lo hace el revisor documental? ¿Quién exporta reportes?
 
@@ -99,6 +100,12 @@ Los visitantes que no son trabajadores de una contratista, ¿necesitan anteceden
 **P18.** Función Judicial: ¿qué cuenta como hallazgo (cualquier proceso, solo penales o solo sentencias)? ¿Quién lo revisa?
 
 **P19.** Revocar el consentimiento, ¿debe anular una verificación ya `VALIDADA`?
+
+**P21. Avisos y correos de vencimiento.**
+Hoy, cada día a las 06:00, el sistema crea alertas a los 30 y a los 7 días antes de que venza un documento aprobado, y envía un resumen por correo solo al administrador del cliente. Para confirmar:
+- ¿Con cuántos días de anticipación se avisa?
+- ¿Quién más recibe el correo (gestor, revisor, la propia empresa contratista)?
+- ¿Se avisa también a la contratista cuando un documento suyo es observado o rechazado?
 
 ## F. Operación
 

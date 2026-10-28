@@ -1,8 +1,11 @@
 from datetime import date, timedelta
 
+from celery.schedules import crontab
+from django.conf import settings
+from django.core import mail
 from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from apps.core.choices import EstadoCumplimiento
@@ -300,3 +303,129 @@ class CumplimientoPermisosTests(TestCase):
         self.assertRedirects(self._revisar(), self.url_detalle, fetch_redirect_response=False)
         self.assertEqual(Revision.objects.count(), 1)
         self.assertEqual(self._asignar().headers["HX-Redirect"], reverse("cumplimiento:catalogo"))
+
+
+class JobDiarioYNotificacionesTests(TestCase):
+    """T5 / S8: aviso previo al vencimiento (RF-033), hora fija y resumen diario por correo (RF-060/061)."""
+
+    def setUp(self):
+        self.organizacion = Organizacion.objects.create(nombre="Minera del Sur")
+        self.otra = Organizacion.objects.create(nombre="Otra minera")
+        self.admin = usuario_con_rol(self.organizacion, "admin_cliente")
+        self.empresa = EmpresaContratista.objects.create(
+            organizacion=self.organizacion, razon_social="Transportes Andinos", ruc="1790000000009"
+        )
+        self.catalogo = CatalogoRequisito.objects.create(
+            organizacion=self.organizacion, codigo="poliza", nombre="Póliza de responsabilidad", aplica_a=AplicaA.EMPRESA
+        )
+
+    def _documento_aprobado(self, dias_para_vencer):
+        requisito = services.asignar_requisito(catalogo=self.catalogo, empresa=self.empresa, actor=self.admin)
+        documento = services.subir_documento(
+            requisito_aplicado=requisito,
+            archivo=ContentFile(b"poliza", name="poliza.pdf"),
+            actor=self.admin,
+            fecha_vencimiento=date.today() + timedelta(days=dias_para_vencer),
+        )
+        services.revisar_documento(documento_version=documento, revisor=self.admin, decision=Revision.Decision.APROBADO)
+        return documento
+
+    def _avisos(self):
+        return AlertaNotificacion.objects.filter(tipo="DOCUMENTO_POR_VENCER")
+
+    def test_avisa_una_sola_vez_por_umbral_antes_del_vencimiento(self):
+        documento = self._documento_aprobado(dias_para_vencer=20)
+
+        primera = procesar_vencimientos()
+        segunda = procesar_vencimientos()
+
+        self.assertEqual(primera["avisos_previos"], 1)
+        self.assertEqual(segunda["avisos_previos"], 0)
+        aviso = self._avisos().get()
+        self.assertIn("Póliza de responsabilidad", aviso.titulo)
+        self.assertEqual(aviso.fecha_referencia, documento.fecha_vencimiento)
+        self.assertEqual(aviso.organizacion, self.organizacion)
+
+        # Pasa el tiempo: ahora faltan 5 días y se cruza el umbral de 7.
+        DocumentoVersion.objects.filter(pk=documento.pk).update(fecha_vencimiento=date.today() + timedelta(days=5))
+        self.assertEqual(procesar_vencimientos()["avisos_previos"], 1)
+        self.assertEqual(self._avisos().count(), 2)
+
+    def test_documento_que_vence_en_cinco_dias_recibe_solo_el_aviso_del_umbral_menor(self):
+        self._documento_aprobado(dias_para_vencer=5)
+
+        procesar_vencimientos()
+
+        self.assertEqual(self._avisos().count(), 1)
+        self.assertIn("5 días", self._avisos().get().mensaje)
+
+    def test_no_avisa_fuera_del_umbral_ni_documentos_sin_aprobar(self):
+        self._documento_aprobado(dias_para_vencer=40)
+        requisito = services.asignar_requisito(
+            catalogo=CatalogoRequisito.objects.create(
+                organizacion=self.organizacion, codigo="ruc", nombre="RUC", aplica_a=AplicaA.EMPRESA
+            ),
+            empresa=self.empresa,
+            actor=self.admin,
+        )
+        services.subir_documento(
+            requisito_aplicado=requisito,
+            archivo=ContentFile(b"ruc", name="ruc.pdf"),
+            actor=self.admin,
+            fecha_vencimiento=date.today() + timedelta(days=3),
+        )
+
+        self.assertEqual(procesar_vencimientos()["avisos_previos"], 0)
+        self.assertEqual(self._avisos().count(), 0)
+
+    @override_settings(SIGECOP_DIAS_AVISO_VENCIMIENTO=(15,))
+    def test_los_umbrales_son_configurables(self):
+        self._documento_aprobado(dias_para_vencer=20)
+
+        self.assertEqual(procesar_vencimientos()["avisos_previos"], 0)
+
+    def test_resumen_diario_llega_solo_al_administrador_de_la_organizacion(self):
+        revisor = usuario_con_rol(self.organizacion, "revisor_documental")
+        garita = usuario_con_rol(self.organizacion, "seguridad_garita")
+        admin_otra = Usuario.objects.create_user(
+            email="admin@otra.com", nombre_completo="Admin otra", password="UnaClaveSegura123!"
+        )
+        RolAsignado.objects.create(
+            usuario=admin_otra, organizacion=self.otra, rol=Rol.objects.get(codigo="admin_cliente")
+        )
+        self._documento_aprobado(dias_para_vencer=20)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            resultado = procesar_vencimientos()
+
+        self.assertEqual(resultado["resumenes_enviados"], 1)
+        self.assertEqual(len(mail.outbox), 1)
+        correo = mail.outbox[0]
+        self.assertEqual(correo.to, [self.admin.email])
+        self.assertNotIn(revisor.email, correo.to)
+        self.assertNotIn(garita.email, correo.to)
+        self.assertIn("Póliza de responsabilidad", correo.body)
+        self.assertIn("Minera del Sur", correo.subject)
+        self.assertTrue(
+            EventoAuditoria.objects.filter(accion="ENVIAR_RESUMEN_ALERTAS", organizacion=self.organizacion).exists()
+        )
+
+    def test_el_resumen_no_se_repite_el_mismo_dia_ni_sale_sin_alertas(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(procesar_vencimientos()["resumenes_enviados"], 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+        self._documento_aprobado(dias_para_vencer=20)
+        with self.captureOnCommitCallbacks(execute=True):
+            procesar_vencimientos()
+            procesar_vencimientos()
+
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_el_job_corre_a_hora_fija_en_la_zona_de_ecuador(self):
+        programacion = settings.CELERY_BEAT_SCHEDULE["procesar-vencimientos-diario"]["schedule"]
+
+        self.assertIsInstance(programacion, crontab)
+        self.assertEqual(programacion.hour, {settings.SIGECOP_JOB_DIARIO_HORA})
+        self.assertEqual(programacion.minute, {0})
+        self.assertEqual(settings.CELERY_TIMEZONE, "America/Guayaquil")
