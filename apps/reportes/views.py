@@ -8,11 +8,12 @@ from datetime import date
 
 from django.core.paginator import Paginator
 from django.http import HttpResponse
-from django.shortcuts import render
+from django.shortcuts import get_object_or_404, render
 from django.views import View
 
 from apps.empresas.models import EmpresaContratista
 from apps.identidad.mixins import RequierePermisoMixin
+from apps.personas.models import Persona
 from apps.reportes import services
 
 REPORTES = {
@@ -103,6 +104,20 @@ class ReporteView(_ReporteMixin, View):
             "consulta": request.GET.urlencode(),
         }
         return render(request, "reportes/reporte.html", contexto)
+
+
+class ExpedientePersonaView(RequierePermisoMixin, View):
+    """T13 / S11: chronological person file. Same audience as the person list; garita gets 403."""
+
+    accion_requerida = "ver_registros"
+
+    def get(self, request, pk):
+        persona = get_object_or_404(Persona, pk=pk, organizacion_id__in=self.organizaciones_permitidas())
+        return render(
+            request,
+            "reportes/expediente.html",
+            {"persona": persona, "eventos": services.expediente_persona(persona)},
+        )
 
 
 class ExportarReporteView(_ReporteMixin, View):

@@ -45,6 +45,7 @@
               <td>{% include "identidad/_estado_acceso.html" with cuenta=persona.usuario %}</td>
               <td>
                 <div class="sc-tabla-acciones">
+                <a href="{% url 'reportes:expediente_persona' persona.pk %}" class="sc-boton-secundario sc-boton-compacto">Expediente</a>
                 <button type="button" class="sc-boton-secundario sc-boton-compacto"
                         hx-get="{% url 'personas:enviar_acceso' persona.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
                   Enviar acceso

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block titulo %}Expediente · {{ persona.nombre_completo }} · SIGECOP{% endblock %}
+{% block nav_personas %}activo{% endblock %}
+{% block migas %}<a href="{% url 'personas:lista' %}">Personas</a> <span class="sc-migas__sep">/</span> <strong>Expediente</strong>{% endblock %}
+
+{% block contenido %}
+  <div class="sc-cabecera-lista">
+    <div>
+      <p class="sc-etiqueta-seccion">Expediente</p>
+      <h1>{{ persona.nombre_completo }}</h1>
+      <p class="sc-subtitulo !mb-0">
+        {{ persona.get_tipo_documento_display }} {{ persona.numero_documento }} · Estado documental: {{ persona.get_estado_display }}
+        {% if persona.nacionalidad %} · {{ persona.nacionalidad }}{% endif %}
+      </p>
+    </div>
+  </div>
+
+  <div class="sc-tarjeta">
+    {% if eventos %}
+      <table class="sc-tabla">
+        <thead><tr><th>Fecha</th><th>Tipo</th><th>Descripción</th><th>Detalle</th></tr></thead>
+        <tbody>
+          {% for evento in eventos %}
+            <tr>
+              <td><span class="sc-dato-mono">{{ evento.fecha|date:"d/m/Y H:i" }}</span></td>
+              <td>{{ evento.tipo }}</td>
+              <td>{{ evento.descripcion }}</td>
+              <td>{{ evento.detalle }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="sc-texto-muted">Todavía no hay movimientos para esta persona.</p>
+    {% endif %}
+  </div>
+{% endblock %}

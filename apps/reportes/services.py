@@ -189,3 +189,54 @@ def exportar_xlsx(*, reporte, filas, actor, organizaciones_ids, filtros):
     )
     return contenido, exportacion
 
+
+_VERIFICACION_CERRADA = {"VALIDADA", "VENCIDA", "CANCELADA", "FALLIDA"}
+
+
+def expediente_persona(persona):
+    """
+    T13 / S11 (RF-023): chronological file of one person, newest first. Read-only.
+
+    Antecedentes verifications appear only as "En curso"/"Cerrada" with their date: never the result,
+    the detailed state, the certificate or the validity date (constitution §2.7).
+    """
+    eventos = []
+
+    def agregar(fecha, tipo, descripcion, detalle=""):
+        eventos.append({"fecha": fecha, "tipo": tipo, "descripcion": descripcion, "detalle": detalle})
+
+    for asignacion in persona.asignaciones.select_related("empresa"):
+        agregar(
+            asignacion.created_at,
+            "Asignación",
+            f"{asignacion.empresa.razon_social} · {asignacion.cargo_o_actividad}",
+            f"Desde {asignacion.fecha_inicio:%d/%m/%Y}" + ("" if asignacion.activa else " (inactiva)"),
+        )
+    documentos = DocumentoVersion.objects.filter(requisito_aplicado__persona=persona).select_related(
+        "requisito_aplicado__catalogo"
+    )
+    for documento in documentos:
+        nombre = documento.requisito_aplicado.catalogo.nombre
+        agregar(documento.created_at, "Documento cargado", f"{nombre} (versión {documento.version})")
+        for revision in documento.revisiones.all():
+            agregar(revision.created_at, "Revisión de documento", nombre, revision.get_decision_display())
+    for permiso in persona.permisos_ingreso.select_related("instalacion"):
+        agregar(
+            permiso.created_at,
+            "Permiso de ingreso",
+            permiso.instalacion.nombre,
+            f"{permiso.get_estado_display()} · {permiso.fecha_inicio_vigencia:%d/%m/%Y}"
+            f" al {permiso.fecha_fin_vigencia:%d/%m/%Y}",
+        )
+    for verificacion in persona.verificaciones_antecedentes.only("created_at", "estado"):
+        agregar(
+            verificacion.created_at,
+            "Verificación de antecedentes",
+            "Solicitud de verificación",
+            "Cerrada" if verificacion.estado in _VERIFICACION_CERRADA else "En curso",
+        )
+    for evento in persona.eventos_acceso.select_related("instalacion"):
+        agregar(evento.created_at, "Acceso", evento.instalacion.nombre, evento.get_tipo_display())
+    # Ties (same timestamp) keep the domain order reversed: an access never appears before its permit.
+    orden = sorted(enumerate(eventos), key=lambda par: (par[1]["fecha"], par[0]), reverse=True)
+    return [evento for _, evento in orden]

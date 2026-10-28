@@ -4124,6 +4124,24 @@ class EvidenciaJudicialTests(EvidenciaJudicialBase):
         verificacion.refresh_from_db()
         self.assertEqual(verificacion.estado, E.REQUIERE_REVISION)
 
+    def test_una_fallida_conserva_el_codigo_del_ministerio_tras_la_evidencia_judicial(self):
+        from apps.antecedentes import api
+
+        verificacion, consulta = self.verificacion_lista(E.FALLIDA)
+        services.cambiar_estado_consulta(
+            consulta=consulta, nuevo_estado=EstadoConsulta.FALLIDA, codigo_error=services.ANT_RATE_LIMITED
+        )
+
+        self.cargar_judicial(verificacion)
+        # En producción la consulta judicial siempre es posterior; aquí el reloj puede repetir el instante.
+        ConsultaProveedor.objects.filter(proveedor=ProveedorAntecedentes.FUNCION_JUDICIAL).update(
+            created_at=consulta.created_at + timedelta(minutes=5)
+        )
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.FALLIDA)  # la evidencia judicial no rescata un fallo
+        self.assertEqual(api._espera_humana(verificacion)[:2], (services.ANT_RATE_LIMITED, "CARGA_MANUAL"))
+
 
 class EvidenciaJudicialUITests(EvidenciaJudicialBase):
     def setUp(self):

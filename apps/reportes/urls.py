@@ -1,6 +1,6 @@
 from django.urls import path
 
-from apps.reportes.views import ExportarReporteView, IndiceReportesView, ReporteView
+from apps.reportes.views import ExpedientePersonaView, ExportarReporteView, IndiceReportesView, ReporteView
 
 app_name = "reportes"
 
@@ -26,4 +26,5 @@ urlpatterns = [
         ExportarReporteView.as_view(reporte="informacion"),
         name="informacion_trabajadores_excel",
     ),
+    path("reportes/personas/<uuid:pk>/expediente/", ExpedientePersonaView.as_view(), name="expediente_persona"),
 ]

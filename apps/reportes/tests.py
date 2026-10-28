@@ -6,13 +6,14 @@ from django.test import TestCase
 from django.urls import reverse
 from openpyxl import load_workbook
 
+from apps.accesos.models import EstadoPermiso, EventoAcceso, PermisoIngreso, TipoEvento
 from apps.antecedentes.models import EstadoVerificacion, ModoConector, ResultadoAntecedentes, VerificacionAntecedentes
 from apps.core.choices import EstadoCumplimiento
 from apps.core.models import EventoAuditoria, ExportacionAuditoria
 from apps.cumplimiento import services as cumplimiento
 from apps.cumplimiento.models import AplicaA, CatalogoRequisito, Revision
 from apps.empresas.models import EmpresaContratista
-from apps.identidad.models import Organizacion, Rol, RolAsignado, Usuario
+from apps.identidad.models import Instalacion, Organizacion, Rol, RolAsignado, Usuario
 from apps.personas.models import Asignacion, Persona, TipoDocumento
 
 COLUMNAS_INFORMACION = {
@@ -211,3 +212,71 @@ class ReportesTests(TestCase):
         self.assertEqual(sorted(cedulas), ["0102030405", "0911111111"])
         self.assertNotIn("Antecedentes", [celda.value for celda in hoja[1]])
 
+
+class ExpedientePersonaTests(TestCase):
+    """T13 / S11: chronological person file (RF-023) without the antecedentes result."""
+
+    def setUp(self):
+        ReportesTests.setUp(self)  # same data, without re-running the report tests
+        self.planta = Instalacion.objects.create(organizacion=self.organizacion, nombre="Planta Norte")
+        self.permiso = PermisoIngreso.objects.create(
+            organizacion=self.organizacion,
+            persona=self.ana,
+            instalacion=self.planta,
+            estado=EstadoPermiso.APROBADO,
+            fecha_inicio_vigencia=date.today(),
+            fecha_fin_vigencia=date.today() + timedelta(days=30),
+        )
+        EventoAcceso.objects.create(
+            permiso_ingreso=self.permiso,
+            persona=self.ana,
+            instalacion=self.planta,
+            tipo=TipoEvento.ENTRADA,
+            registrado_por=self.garita,
+        )
+
+    def _expediente(self, persona, usuario=None):
+        self.client.force_login(usuario or self.admin)
+        return self.client.get(reverse("reportes:expediente_persona", args=[persona.pk]))
+
+    def test_linea_de_tiempo_con_asignacion_documentos_permisos_y_accesos_mas_reciente_primero(self):
+        respuesta = self._expediente(self.ana)
+
+        self.assertEqual(respuesta.status_code, 200)
+        tipos = [evento["tipo"] for evento in respuesta.context["eventos"]]
+        self.assertEqual(
+            tipos, ["Acceso", "Permiso de ingreso", "Revisión de documento", "Documento cargado", "Asignación"]
+        )
+        fechas = [evento["fecha"] for evento in respuesta.context["eventos"]]
+        self.assertEqual(fechas, sorted(fechas, reverse=True))
+        self.assertContains(respuesta, "Cédula de identidad")
+        self.assertContains(respuesta, "Planta Norte")
+        self.assertContains(respuesta, "Transportes Andinos")
+        self.assertContains(respuesta, "Entrada")
+
+    def test_verificacion_de_antecedentes_aparece_sin_resultado(self):
+        respuesta = self._expediente(self.luis)
+
+        eventos = [evento for evento in respuesta.context["eventos"] if evento["tipo"] == "Verificación de antecedentes"]
+        self.assertEqual(len(eventos), 1)
+        self.assertEqual(eventos[0]["detalle"], "Cerrada")
+        for prohibido in ("Sin hallazgos", "sin hallazgos", "Validada", "NO_DETERMINADO", "Resultado"):
+            self.assertNotContains(respuesta, prohibido)
+        vigencia = (date.today() + timedelta(days=60)).strftime("%d/%m/%Y")
+        self.assertNotContains(respuesta, vigencia)
+
+    def test_garita_no_abre_expedientes_y_otra_organizacion_da_404(self):
+        antes = EventoAuditoria.objects.count()
+
+        self.assertEqual(self._expediente(self.ana, usuario=self.garita).status_code, 403)
+        ajeno = Persona.objects.get(numero_documento="0999999999")
+        self.assertEqual(self._expediente(ajeno).status_code, 404)
+        self.assertEqual(self._expediente(self.ana, usuario=self.revisor).status_code, 200)
+
+        self.assertEqual(EventoAuditoria.objects.count(), antes)
+
+    def test_lista_de_personas_enlaza_el_expediente(self):
+        self.client.force_login(self.admin)
+        respuesta = self.client.get(reverse("personas:lista"))
+
+        self.assertContains(respuesta, reverse("reportes:expediente_persona", args=[self.ana.pk]))
