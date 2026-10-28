@@ -2,7 +2,7 @@ import uuid
 from datetime import date
 
 from django.contrib import messages
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
@@ -14,6 +14,7 @@ from apps.cumplimiento.forms import AsignarRequisitoForm, CatalogoRequisitoForm,
 from apps.cumplimiento.models import CatalogoRequisito, DocumentoVersion, EstadoRequisito, RequisitoAplicado, Revision
 from apps.core.modals import exito_htmx, render_modal
 from apps.identidad.mixins import RequierePermisoMixin
+from apps.personas.models import Asignacion
 from apps.identidad.permisos import exigir, organizacion_con_permiso, organizaciones_con_permiso
 
 
@@ -30,7 +31,7 @@ class BandejaRevisionView(RequierePermisoMixin, ListView):
     context_object_name = "requisitos"
     paginate_by = 25
 
-    def get_queryset(self):
+    def _requisitos_en_revision(self):
         return (
             RequisitoAplicado.objects.filter(
                 organizacion_id__in=self.organizaciones_permitidas(), estado=EstadoRequisito.EN_REVISION
@@ -42,6 +43,17 @@ class BandejaRevisionView(RequierePermisoMixin, ListView):
             .order_by("created_at")
         )
 
+    def get_queryset(self):
+        requisitos = self._requisitos_en_revision()
+        empresa_id = _uuid_o_none(self.request.GET.get("empresa"))
+        if empresa_id:
+            # T7: los documentos de la compañía y los de sus trabajadores con una asignación activa.
+            requisitos = requisitos.filter(
+                Q(empresa_id=empresa_id)
+                | Q(persona__asignaciones__empresa_id=empresa_id, persona__asignaciones__activa=True)
+            ).distinct()
+        return requisitos
+
     def get_context_data(self, **kwargs):
         contexto = super().get_context_data(**kwargs)
         # La selección se ofrece por fila: un revisor en A que solo lee en B no ve casillas en filas de B.
@@ -49,6 +61,52 @@ class BandejaRevisionView(RequierePermisoMixin, ListView):
         contexto["puede_revisar"] = bool(contexto["organizaciones_revision"])
         contexto["decisiones"] = Revision.Decision.choices
         return contexto
+
+
+def _uuid_o_none(valor):
+    try:
+        return uuid.UUID(valor) if valor else None
+    except ValueError:
+        return None
+
+
+class PorHacerView(RequierePermisoMixin, View):
+    """
+    T7: fragmento HTMX "Por hacer" del panel, como el inicio del sistema anterior: documentos por aprobar
+    agrupados por compañía. Vive en `cumplimiento` (el panel solo lo carga por URL) para que `identidad`
+    no dependa de una app posterior. Un documento de una persona cuenta para la compañía de su asignación
+    activa más antigua; sin asignación activa va a "Sin compañía asignada".
+    """
+
+    accion_requerida = "revisar_documentos"
+    template_name = "cumplimiento/_por_hacer.html"
+
+    def dispatch(self, request, *args, **kwargs):
+        if not request.htmx:
+            return redirect("cumplimiento:bandeja")
+        return super().dispatch(request, *args, **kwargs)
+
+    def get(self, request):
+        requisitos = RequisitoAplicado.objects.filter(
+            organizacion_id__in=self.organizaciones_permitidas(), estado=EstadoRequisito.EN_REVISION
+        ).select_related("empresa", "persona")
+        asignaciones = {}
+        for asignacion in (
+            Asignacion.objects.filter(persona_id__in={r.persona_id for r in requisitos if r.persona_id}, activa=True)
+            .select_related("empresa")
+            .order_by("fecha_inicio", "created_at")
+        ):
+            asignaciones.setdefault(asignacion.persona_id, asignacion.empresa)
+        companias = {}
+        for requisito in requisitos:
+            empresa = requisito.empresa or asignaciones.get(requisito.persona_id)
+            clave = empresa.pk if empresa else None
+            fila = companias.setdefault(
+                clave, {"id": clave, "nombre": empresa.razon_social if empresa else "Sin compañía asignada", "total": 0}
+            )
+            fila["total"] += 1
+        filas = sorted(companias.values(), key=lambda fila: (-fila["total"], fila["nombre"]))
+        return render(request, self.template_name, {"companias": filas})
 
 
 class RevisarLoteView(RequierePermisoMixin, View):

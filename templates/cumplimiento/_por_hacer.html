@@ -1,0 +1,23 @@
+<div class="sc-seccion-cabecera">
+  <div>
+    <p class="sc-etiqueta-seccion">Por hacer</p>
+    <h2>Documentos por aprobar</h2>
+  </div>
+  <a href="{% url 'cumplimiento:bandeja' %}" class="sc-enlace-control">Ir a la bandeja</a>
+</div>
+{% if companias %}
+  <ul class="sc-lista-por-hacer">
+    {% for compania in companias %}
+      <li>
+        {% if compania.id %}
+          <a href="{% url 'cumplimiento:bandeja' %}?empresa={{ compania.id }}" class="sc-enlace-control">{{ compania.nombre }}</a>
+        {% else %}
+          <span>{{ compania.nombre }}</span>
+        {% endif %}
+        <span class="sc-texto-muted">· {{ compania.total }} documento{{ compania.total|pluralize }} por aprobar</span>
+      </li>
+    {% endfor %}
+  </ul>
+{% else %}
+  <div class="sc-vacio"><p>No hay documentos esperando aprobación.</p></div>
+{% endif %}

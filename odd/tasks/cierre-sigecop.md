@@ -28,7 +28,8 @@ Branch: `feat/cierre-sigecop`. Read until `## Log` before working.
 - T5b — RN-005 — compute "today" in America/Guayaquil (not UTC) in accesos, antecedentes and cumplimiento — inline — done, commit: see L6
 - T5c — S8 — digest audit: record "scheduled" before sending and "sent OK" only after SMTP succeeds (GGA note on 496c908) — inline — done, see git log
 - T6 — S9 — bulk document review with Gestión and emission date — inline — done, see git log (431 tests OK)
-- T7..T14 — see plan in `odd/diagnostico-sigecop.md` §6 — pending
+- T7 — "Por hacer" on the home panel: documents to approve grouped by company (HTMX fragment served by cumplimiento so identidad keeps backward-only deps), inbox filter ?empresa= — inline — done, see git log
+- T8..T14 — see plan in `odd/diagnostico-sigecop.md` §6 — pending
 
 ## Log
 

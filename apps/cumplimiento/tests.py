@@ -27,6 +27,7 @@ from apps.cumplimiento.models import (
     Revision,
 )
 from apps.empresas.models import EmpresaContratista
+from apps.personas.models import Asignacion, Persona, TipoDocumento
 from apps.identidad.models import Organizacion, Rol, RolAsignado, Usuario
 
 
@@ -633,3 +634,95 @@ class RevisionEnLoteTests(TestCase):
 
         evento = EventoAuditoria.objects.get(accion="REVISAR_DOCUMENTO_APROBADO")
         self.assertEqual(evento.metadata.get("fecha_emision"), emision.isoformat())
+
+
+class PorHacerTests(TestCase):
+    """T7: "Por hacer" del inicio, como el sistema anterior: documentos por aprobar agrupados por compañía."""
+
+    HTMX = {"HTTP_HX_REQUEST": "true"}
+
+    def setUp(self):
+        self.organizacion = Organizacion.objects.create(nombre="Minera del Sur")
+        self.otra = Organizacion.objects.create(nombre="Otra minera")
+        self.gestor = usuario_con_rol(self.organizacion, "gestor_contratista")
+        self.revisor = usuario_con_rol(self.organizacion, "revisor_documental")
+        self.andinos = EmpresaContratista.objects.create(
+            organizacion=self.organizacion, razon_social="Transportes Andinos", ruc="1790000000009"
+        )
+        self.pacifico = EmpresaContratista.objects.create(
+            organizacion=self.organizacion, razon_social="Servicios Pacífico", ruc="1790000000011"
+        )
+        self.persona = Persona.objects.create(
+            organizacion=self.organizacion,
+            tipo_documento=TipoDocumento.CEDULA,
+            numero_documento="0102030405",
+            nombres="Ana",
+            apellidos="Pruebas",
+        )
+        Asignacion.objects.create(
+            organizacion=self.organizacion,
+            persona=self.persona,
+            empresa=self.andinos,
+            cargo_o_actividad="Técnica",
+            fecha_inicio=date.today(),
+        )
+        self._subir("ruc", empresa=self.andinos)
+        self._subir("poliza", empresa=self.andinos)
+        self._subir("cedula", persona=self.persona, aplica_a=AplicaA.PERSONA)
+        self._subir("iess", empresa=self.pacifico)
+        ajena = EmpresaContratista.objects.create(organizacion=self.otra, razon_social="Ajena SA", ruc="1790000000010")
+        self._subir("ajeno", empresa=ajena, organizacion=self.otra)
+        self.client.force_login(self.revisor)
+
+    def _subir(self, codigo, *, empresa=None, persona=None, aplica_a=AplicaA.EMPRESA, organizacion=None):
+        catalogo = CatalogoRequisito.objects.create(
+            organizacion=organizacion or self.organizacion, codigo=codigo, nombre=f"Requisito {codigo}", aplica_a=aplica_a
+        )
+        requisito = services.asignar_requisito(catalogo=catalogo, empresa=empresa, persona=persona, actor=self.gestor)
+        return services.subir_documento(
+            requisito_aplicado=requisito, archivo=ContentFile(codigo.encode(), name=f"{codigo}.pdf"), actor=self.gestor
+        )
+
+    def test_agrupa_por_compania_incluyendo_documentos_de_sus_trabajadores(self):
+        respuesta = self.client.get(reverse("cumplimiento:por_hacer"), **self.HTMX)
+
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertEqual(
+            [(fila["nombre"], fila["total"]) for fila in respuesta.context["companias"]],
+            [("Transportes Andinos", 3), ("Servicios Pacífico", 1)],
+        )
+        self.assertContains(respuesta, "3 documentos por aprobar")
+        self.assertContains(respuesta, f"{reverse('cumplimiento:bandeja')}?empresa={self.andinos.pk}")
+        self.assertNotContains(respuesta, "Ajena SA")
+
+    def test_sin_revisar_documentos_responde_403(self):
+        self.client.force_login(self.gestor)
+
+        self.assertEqual(self.client.get(reverse("cumplimiento:por_hacer"), **self.HTMX).status_code, 403)
+
+    def test_sin_htmx_redirige_a_la_bandeja(self):
+        respuesta = self.client.get(reverse("cumplimiento:por_hacer"))
+
+        self.assertRedirects(respuesta, reverse("cumplimiento:bandeja"), fetch_redirect_response=False)
+
+    def test_el_panel_carga_por_hacer_solo_para_quien_revisa(self):
+        url = reverse("cumplimiento:por_hacer")
+        self.assertContains(self.client.get(reverse("identidad:panel")), url)
+
+        self.client.force_login(self.gestor)
+        self.assertNotContains(self.client.get(reverse("identidad:panel")), url)
+
+    def test_la_bandeja_filtra_por_compania(self):
+        respuesta = self.client.get(reverse("cumplimiento:bandeja"), {"empresa": str(self.pacifico.pk)})
+
+        self.assertContains(respuesta, "Requisito iess")
+        self.assertNotContains(respuesta, "Requisito ruc")
+        self.assertNotContains(respuesta, "Requisito cedula")
+
+        respuesta = self.client.get(reverse("cumplimiento:bandeja"), {"empresa": str(self.andinos.pk)})
+        self.assertContains(respuesta, "Requisito cedula")
+        self.assertNotContains(respuesta, "Requisito iess")
+
+        respuesta = self.client.get(reverse("cumplimiento:bandeja"), {"empresa": "no-es-uuid"})
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertContains(respuesta, "Requisito iess")

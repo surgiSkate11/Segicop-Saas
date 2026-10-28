@@ -50,6 +50,12 @@
     {% endif %}
   </div>
 
+  {% if 'revisar_documentos' in acciones_permitidas %}
+    <div hx-get="{% url 'cumplimiento:por_hacer' %}" hx-trigger="load" hx-swap="innerHTML" aria-live="polite">
+      <p class="sc-texto-muted">Cargando documentos por aprobar…</p>
+    </div>
+  {% endif %}
+
   {% if alertas_pendientes %}
     <div class="sc-seccion-cabecera">
       <div>
