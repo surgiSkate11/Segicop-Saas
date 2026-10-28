@@ -24,7 +24,7 @@ Branch: `feat/cierre-sigecop`. Read until `## Log` before working.
 - T4 — entry permits require human approval (needs director P9) — blocked
 - T5 — S8 — fixed-hour daily job, pre-expiry alerts, daily alert email digest — inline — done, commit 496c908 (see L5)
 - T5b — RN-005 — compute "today" in America/Guayaquil (not UTC) in accesos, antecedentes and cumplimiento — inline — done, commit: see L6
-- T5c — S8 — digest audit: record "scheduled" before sending and "sent OK" only after SMTP succeeds (GGA note on 496c908) — pending
+- T5c — S8 — digest audit: record "scheduled" before sending and "sent OK" only after SMTP succeeds (GGA note on 496c908) — inline — done, see git log
 - T6..T14 — see plan in `odd/diagnostico-sigecop.md` §6 — pending
 
 ## Log

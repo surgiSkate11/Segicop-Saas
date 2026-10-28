@@ -2,9 +2,10 @@
 T5 / S8 (RF-060, RF-061): resumen diario de alertas por correo, uno por organización y día.
 
 Destinatarios: usuarios internos activos con la acción `recibir_resumen_alertas` de la matriz
-(`identidad.permisos`). El envío se decide y audita dentro de la transacción (eso evita un segundo
-resumen el mismo día) y el correo sale solo si la transacción confirma. Si el SMTP falla, queda un
-evento con resultado ERROR y una alerta ALTA: nunca se da por enviado en silencio.
+(`identidad.permisos`). Dentro de la transacción se audita PROGRAMAR_RESUMEN_ALERTAS (eso evita un
+segundo resumen el mismo día) y el correo sale solo si la transacción confirma. ENVIAR_RESUMEN_ALERTAS
+con resultado OK se registra solo cuando el SMTP aceptó el mensaje; si falla, queda ERROR y una alerta
+ALTA: nunca se da por enviado en silencio.
 """
 
 import logging
@@ -24,7 +25,8 @@ from apps.identidad.permisos import PERMISOS
 
 logger = logging.getLogger("sigecop.identidad")
 
-ACCION = "ENVIAR_RESUMEN_ALERTAS"
+ACCION_PROGRAMAR = "PROGRAMAR_RESUMEN_ALERTAS"
+ACCION_ENVIAR = "ENVIAR_RESUMEN_ALERTAS"
 MAX_ALERTAS_EN_CORREO = 50
 
 
@@ -44,7 +46,7 @@ def _destinatarios(organizacion):
 
 def _ya_enviado(organizacion, hoy):
     return EventoAuditoria.objects.filter(
-        accion=ACCION, organizacion=organizacion, resultado="OK", created_at__date=hoy
+        accion=ACCION_PROGRAMAR, organizacion=organizacion, created_at__date=hoy
     ).exists()
 
 
@@ -73,7 +75,7 @@ def _enviar_resumen(*, organizacion, hoy) -> bool:
     )
     emitir_evento(
         actor=None,
-        accion=ACCION,
+        accion=ACCION_PROGRAMAR,
         recurso=organizacion,
         organizacion=organizacion,
         motivo=f"Resumen de {len(alertas)} alertas del {hoy:%d/%m/%Y} para {len(destinatarios)} destinatarios.",
@@ -99,7 +101,7 @@ def _enviar_resumen(*, organizacion, hoy) -> bool:
             logger.exception("No se pudo enviar el resumen de alertas de %s", organizacion.pk)
             emitir_evento(
                 actor=None,
-                accion=ACCION,
+                accion=ACCION_ENVIAR,
                 recurso=organizacion,
                 organizacion=organizacion,
                 motivo=f"Falló el envío del resumen de alertas: {error.__class__.__name__}.",
@@ -114,6 +116,14 @@ def _enviar_resumen(*, organizacion, hoy) -> bool:
                 mensaje="Revisa la configuración de correo. Las alertas siguen disponibles en SIGECOP.",
                 severidad="ALTA",
                 fecha_referencia=hoy,
+            )
+        else:
+            emitir_evento(
+                actor=None,
+                accion=ACCION_ENVIAR,
+                recurso=organizacion,
+                organizacion=organizacion,
+                motivo=f"Resumen de alertas enviado a {len(destinatarios)} destinatarios.",
             )
 
     transaction.on_commit(_enviar)

@@ -1,3 +1,4 @@
+import smtplib
 from datetime import date, datetime, time, timedelta
 from datetime import timezone as dt_timezone
 from unittest import mock
@@ -445,3 +446,17 @@ class JobDiarioYNotificacionesTests(TestCase):
 
         documento.requisito_aplicado.refresh_from_db()
         self.assertEqual(documento.requisito_aplicado.estado, EstadoRequisito.APROBADO)
+
+    def test_un_resumen_que_falla_no_queda_auditado_como_enviado(self):
+        # T5c: "programado" se registra antes del envío; "enviado OK" solo si el SMTP respondió.
+        self._documento_aprobado(dias_para_vencer=20)
+
+        with mock.patch("apps.identidad.notificaciones.enviar_correo", side_effect=smtplib.SMTPException("caído")):
+            with self.captureOnCommitCallbacks(execute=True):
+                procesar_vencimientos()
+
+        eventos = EventoAuditoria.objects.filter(organizacion=self.organizacion)
+        self.assertTrue(eventos.filter(accion="PROGRAMAR_RESUMEN_ALERTAS").exists())
+        self.assertFalse(eventos.filter(accion="ENVIAR_RESUMEN_ALERTAS", resultado="OK").exists())
+        self.assertTrue(eventos.filter(accion="ENVIAR_RESUMEN_ALERTAS", resultado="ERROR").exists())
+        self.assertTrue(AlertaNotificacion.objects.filter(tipo="RESUMEN_NO_ENVIADO", severidad="ALTA").exists())
