@@ -15,7 +15,7 @@
 
   {% if requisitos %}
     {% if puede_revisar %}<form method="post" action="{% url 'cumplimiento:revisar_lote' %}" id="sc-revision-lote">{% csrf_token %}{% endif %}
-    <div class="sc-tabla-meta"><span>{{ requisitos|length }} revisiones pendientes</span><span class="sc-tabla-meta__hint">Ordenadas por fecha de llegada</span></div>
+    <div class="sc-tabla-meta"><span>{% if paginator %}{{ paginator.count }}{% else %}{{ requisitos|length }}{% endif %} revisiones pendientes</span><span class="sc-tabla-meta__hint">Ordenadas por fecha de llegada</span></div>
     <div class="sc-tabla-envoltorio">
       <table class="sc-tabla">
         <thead>
@@ -38,7 +38,7 @@
             {% with documento=requisito.vigentes.0 %}
             <tr>
               {% if puede_revisar %}
-                <td>{% if documento %}<input type="checkbox" name="documentos" value="{{ documento.pk }}" aria-label="Seleccionar {{ requisito.catalogo.nombre }}">{% endif %}</td>
+                <td>{% if documento and requisito.organizacion_id in organizaciones_revision %}<input type="checkbox" name="documentos" value="{{ documento.pk }}" aria-label="Seleccionar {{ requisito.catalogo.nombre }}">{% endif %}</td>
               {% endif %}
               <td>{{ requisito.catalogo.nombre }}</td>
               <td>{{ requisito.empresa|default:requisito.persona }}</td>
@@ -46,7 +46,7 @@
               <td>{{ documento.created_at|date:"d/m/Y" }}</td>
               <td>{{ documento.fecha_vencimiento|date:"d/m/Y"|default:"—" }}</td>
               {% if puede_revisar %}
-                <td>{% if documento %}<input type="date" class="sc-input" name="fecha_emision_{{ documento.pk }}" aria-label="Fecha de emisión de {{ requisito.catalogo.nombre }}">{% endif %}</td>
+                <td>{% if documento and requisito.organizacion_id in organizaciones_revision %}<input type="date" class="sc-input" name="fecha_emision_{{ documento.pk }}" aria-label="Fecha de emisión de {{ requisito.catalogo.nombre }}">{% endif %}</td>
               {% endif %}
               <td><a class="sc-enlace-control" href="{% url 'cumplimiento:detalle' requisito.pk %}">Ver documento</a></td>
             </tr>

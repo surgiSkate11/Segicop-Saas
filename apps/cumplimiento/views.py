@@ -1,3 +1,4 @@
+import uuid
 from datetime import date
 
 from django.contrib import messages
@@ -13,7 +14,7 @@ from apps.cumplimiento.forms import AsignarRequisitoForm, CatalogoRequisitoForm,
 from apps.cumplimiento.models import CatalogoRequisito, DocumentoVersion, EstadoRequisito, RequisitoAplicado, Revision
 from apps.core.modals import exito_htmx, render_modal
 from apps.identidad.mixins import RequierePermisoMixin
-from apps.identidad.permisos import exigir, organizacion_con_permiso, organizaciones_con_permiso, puede
+from apps.identidad.permisos import exigir, organizacion_con_permiso, organizaciones_con_permiso
 
 
 class BandejaRevisionView(RequierePermisoMixin, ListView):
@@ -43,7 +44,9 @@ class BandejaRevisionView(RequierePermisoMixin, ListView):
 
     def get_context_data(self, **kwargs):
         contexto = super().get_context_data(**kwargs)
-        contexto["puede_revisar"] = puede(self.request.user, "revisar_documentos")
+        # La selección se ofrece por fila: un revisor en A que solo lee en B no ve casillas en filas de B.
+        contexto["organizaciones_revision"] = set(organizaciones_con_permiso(self.request.user, "revisar_documentos"))
+        contexto["puede_revisar"] = bool(contexto["organizaciones_revision"])
         contexto["decisiones"] = Revision.Decision.choices
         return contexto
 
@@ -55,14 +58,17 @@ class RevisarLoteView(RequierePermisoMixin, View):
     http_method_names = ["post"]
 
     def post(self, request):
-        ids = request.POST.getlist("documentos")
-        documentos = list(
-            DocumentoVersion.objects.select_related(
-                "requisito_aplicado__catalogo", "requisito_aplicado__empresa", "requisito_aplicado__persona"
-            ).filter(pk__in=ids, organizacion_id__in=self.organizaciones_permitidas())
-        )
         try:
-            if len(documentos) != len(set(ids)):
+            try:
+                ids = {uuid.UUID(valor) for valor in request.POST.getlist("documentos")}
+            except ValueError:
+                raise DomainError("La selección contiene un documento inválido.") from None
+            documentos = list(
+                DocumentoVersion.objects.select_related(
+                    "requisito_aplicado__catalogo", "requisito_aplicado__empresa", "requisito_aplicado__persona"
+                ).filter(pk__in=ids, organizacion_id__in=self.organizaciones_permitidas())
+            )
+            if len(documentos) != len(ids):
                 raise DomainError("Algún documento seleccionado no existe o no puedes revisarlo.")
             fechas = {}
             for documento in documentos:

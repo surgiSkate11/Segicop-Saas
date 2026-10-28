@@ -145,6 +145,7 @@ def revisar_documento(
         recurso=revision,
         organizacion=documento_version.organizacion,
         motivo=comentario or "Sin comentario.",
+        metadata={"fecha_emision": fecha_emision.isoformat()} if fecha_emision else None,
     )
     _recalcular(empresa=requisito_aplicado.empresa, persona=requisito_aplicado.persona, actor=revisor)
     return revision

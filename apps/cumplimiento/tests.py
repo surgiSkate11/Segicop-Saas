@@ -597,3 +597,39 @@ class RevisionEnLoteTests(TestCase):
         )
 
         self.assertEqual(self.documentos[0].revisiones.get().fecha_emision, emision)
+
+    def test_id_que_no_es_uuid_muestra_error_y_no_responde_500(self):
+        antes = self._conteos()
+
+        respuesta = self.client.post(
+            reverse("cumplimiento:revisar_lote"), {"documentos": ["no-es-un-uuid"], "decision": "APROBADO"}
+        )
+
+        self.assertRedirects(respuesta, reverse("cumplimiento:bandeja"), fetch_redirect_response=False)
+        self.assertEqual(self._conteos(), antes)
+
+    def test_seleccion_solo_en_filas_de_organizaciones_donde_revisa(self):
+        # Revisor en "Minera del Sur", solo lector (responsable de área) en "Otra minera".
+        RolAsignado.objects.create(
+            usuario=self.revisor,
+            organizacion=self.otra,
+            rol=Rol.objects.get_or_create(codigo="responsable_area", defaults={"nombre": "Responsable"})[0],
+        )
+        empresa_ajena = EmpresaContratista.objects.create(
+            organizacion=self.otra, razon_social="Ajena", ruc="1790000000010"
+        )
+        ajeno = self._subir("ajeno", organizacion=self.otra, empresa=empresa_ajena)
+
+        respuesta = self.client.get(reverse("cumplimiento:bandeja"))
+
+        self.assertContains(respuesta, "Requisito ajeno")
+        self.assertNotContains(respuesta, f'value="{ajeno.pk}"')
+        self.assertContains(respuesta, f'value="{self.documentos[0].pk}"')
+
+    def test_el_evento_de_revision_registra_la_fecha_de_emision(self):
+        emision = date.today() - timedelta(days=2)
+
+        self._post([self.documentos[0]], fechas={self.documentos[0]: emision.isoformat()})
+
+        evento = EventoAuditoria.objects.get(accion="REVISAR_DOCUMENTO_APROBADO")
+        self.assertEqual(evento.metadata.get("fecha_emision"), emision.isoformat())
