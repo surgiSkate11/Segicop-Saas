@@ -884,7 +884,7 @@ def validar_verificacion(*, verificacion, revisor, decision: str, comentario="",
 
 def marcar_vencidas(actor=None) -> int:
     """Job en bloque para Celery-beat (Fase 9); por ahora, función normal."""
-    hoy = timezone.now().date()
+    hoy = timezone.localdate()
     total = 0
     for verificacion in VerificacionAntecedentes.objects.filter(
         estado=EstadoVerificacion.VALIDADA, vigente_hasta__lt=hoy
@@ -905,7 +905,7 @@ def programar_renovaciones(actor=None) -> int:
     activa y cuya última verificación, validada o vencida, vence dentro del plazo configurado.
     Si la última verificación es otra (una renovación en curso o anulada) no se insiste.
     """
-    limite = timezone.now().date() + timedelta(days=_config("ANTECEDENTES_DIAS_RENOVACION", 15))
+    limite = timezone.localdate() + timedelta(days=_config("ANTECEDENTES_DIAS_RENOVACION", 15))
     ultima = VerificacionAntecedentes.objects.filter(persona=OuterRef("pk")).order_by("-created_at")
     candidatas = (
         Persona.objects.filter(asignaciones__activa=True)

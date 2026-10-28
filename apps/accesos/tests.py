@@ -1,11 +1,20 @@
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
+from datetime import timezone as dt_timezone
+from unittest import mock
+from zoneinfo import ZoneInfo
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
 from apps.accesos.models import EstadoPermiso, EventoAcceso, PermisoIngreso, TipoEvento
-from apps.accesos.services import calcular_habilitacion, registrar_evento_acceso, solicitar_permiso_ingreso
+from apps.accesos.services import (
+    calcular_habilitacion,
+    marcar_vencidos,
+    registrar_evento_acceso,
+    solicitar_permiso_ingreso,
+)
+from apps.antecedentes import services as antecedentes_services
 from apps.antecedentes.models import EstadoVerificacion, ModoConector, ResultadoAntecedentes, VerificacionAntecedentes
 from apps.core.choices import EstadoCumplimiento
 from apps.core.exceptions import DomainError
@@ -350,3 +359,64 @@ class AccesosPermisosTests(TestCase):
         self.assertEqual(PermisoIngreso.objects.count(), 2)
         self.assertEqual(self.client.get(reverse("accesos:lista")).status_code, 200)
         self.assertEqual(self.client.get(reverse("accesos:garita")).status_code, 403)
+
+
+def noche_en_ecuador():
+    """21:00 de hoy en America/Guayaquil: en UTC ya es el día siguiente (RN-005)."""
+    hoy = timezone.localdate()
+    noche = datetime.combine(hoy, time(21, 0), tzinfo=ZoneInfo("America/Guayaquil"))
+    # timezone.now() real devuelve UTC: ahí ya es el día siguiente.
+    return noche.astimezone(dt_timezone.utc), hoy
+
+
+class FechaLocalTests(TestCase):
+    """T5b / RN-005: "hoy" se evalúa en America/Guayaquil, nunca con la fecha UTC."""
+
+    # Reutiliza el escenario habilitado sin heredar (y repetir) las pruebas de HabilitacionTests.
+    setUp = HabilitacionTests.setUp
+    crear_verificacion = HabilitacionTests.crear_verificacion
+
+    def test_antecedentes_que_vencen_hoy_siguen_habilitando_por_la_noche(self):
+        noche, hoy = noche_en_ecuador()
+        self.crear_verificacion(vigente_hasta=hoy)
+
+        with mock.patch("django.utils.timezone.now", return_value=noche):
+            resultado = calcular_habilitacion(self.persona)
+
+        self.assertTrue(resultado.habilitado)
+
+    def test_permiso_que_vence_hoy_sigue_vigente_por_la_noche(self):
+        noche, hoy = noche_en_ecuador()
+        self.crear_verificacion()
+        permiso = solicitar_permiso_ingreso(
+            persona=self.persona,
+            instalacion=self.instalacion,
+            actor=self.usuario,
+            fecha_inicio_vigencia=hoy - timedelta(days=1),
+            fecha_fin_vigencia=hoy,
+        )
+
+        with mock.patch("django.utils.timezone.now", return_value=noche):
+            self.assertTrue(permiso.vigente_hoy)
+            self.assertEqual(marcar_vencidos(), 0)
+
+        permiso.refresh_from_db()
+        self.assertEqual(permiso.estado, EstadoPermiso.APROBADO)
+
+    def test_verificacion_que_vence_hoy_no_se_marca_vencida_por_la_noche(self):
+        noche, hoy = noche_en_ecuador()
+        verificacion = self.crear_verificacion(vigente_hasta=hoy)
+
+        with mock.patch("django.utils.timezone.now", return_value=noche):
+            self.assertEqual(antecedentes_services.marcar_vencidas(), 0)
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, EstadoVerificacion.VALIDADA)
+
+    @override_settings(ANTECEDENTES_DIAS_RENOVACION=15)
+    def test_renovacion_no_se_adelanta_un_dia_por_la_noche(self):
+        noche, hoy = noche_en_ecuador()
+        self.crear_verificacion(vigente_hasta=hoy + timedelta(days=16))
+
+        with mock.patch("django.utils.timezone.now", return_value=noche):
+            self.assertEqual(antecedentes_services.programar_renovaciones(), 0)

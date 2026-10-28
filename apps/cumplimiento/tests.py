@@ -1,4 +1,7 @@
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
+from datetime import timezone as dt_timezone
+from unittest import mock
+from zoneinfo import ZoneInfo
 
 from celery.schedules import crontab
 from django.conf import settings
@@ -7,6 +10,7 @@ from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from apps.core.choices import EstadoCumplimiento
 from apps.core.exceptions import DomainError
@@ -429,3 +433,15 @@ class JobDiarioYNotificacionesTests(TestCase):
         self.assertEqual(programacion.hour, {settings.SIGECOP_JOB_DIARIO_HORA})
         self.assertEqual(programacion.minute, {0})
         self.assertEqual(settings.CELERY_TIMEZONE, "America/Guayaquil")
+
+    def test_documento_que_vence_hoy_sigue_aprobado_por_la_noche(self):
+        # T5b / RN-005: a las 21:00 de Ecuador ya es mañana en UTC.
+        hoy = timezone.localdate()
+        noche_utc = datetime.combine(hoy, time(21, 0), tzinfo=ZoneInfo("America/Guayaquil")).astimezone(dt_timezone.utc)
+        documento = self._documento_aprobado(dias_para_vencer=0)
+
+        with mock.patch("django.utils.timezone.now", return_value=noche_utc):
+            services.recalcular_empresa(self.empresa, actor=None)
+
+        documento.requisito_aplicado.refresh_from_db()
+        self.assertEqual(documento.requisito_aplicado.estado, EstadoRequisito.APROBADO)

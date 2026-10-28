@@ -145,7 +145,7 @@ def revisar_documento(*, documento_version, revisor, decision: str, comentario: 
 
 def _expirar_vencidos(requisitos_obligatorios, actor=None):
     """Detección perezosa de vencimiento en cada recálculo (el job diario de Fase 9 hace lo mismo en bloque)."""
-    hoy = timezone.now().date()
+    hoy = timezone.localdate()
     for requisito in requisitos_obligatorios:
         if requisito.estado != EstadoRequisito.APROBADO:
             continue
