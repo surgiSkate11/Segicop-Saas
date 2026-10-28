@@ -1,8 +1,10 @@
+import re
 from datetime import datetime, timedelta
 from unittest import mock
 
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import AnonymousUser
+from django.core import mail
 from django.core.exceptions import PermissionDenied
 from django.test import TestCase
 from django.urls import reverse
@@ -405,3 +407,191 @@ class PanelYMenuPermisosTests(TestCase):
 
         self.assertContains(respuesta, self._enlace("antecedentes:bandeja"))
         self.assertNotContains(respuesta, self._enlace("accesos:garita"))
+
+
+def enlace_del_correo(correo):
+    return re.search(r"https?://\S+/activar/\S+/", correo.body).group(0)
+
+
+class UsuariosInternosTests(TestCase):
+    """T2: el administrador del cliente invita usuarios internos, les asigna un rol y los desactiva."""
+
+    HTMX = {"HTTP_HX_REQUEST": "true"}
+
+    def setUp(self):
+        self.organizacion = Organizacion.objects.create(nombre="Minera del Sur")
+        self.otra = Organizacion.objects.create(nombre="Otra minera")
+        self.admin = usuario_interno("admin@cliente.com")
+        self.rol_admin = asignar_rol(self.admin, self.organizacion, "admin_cliente")
+        self.revisor = Rol.objects.get_or_create(codigo="revisor_documental", defaults={"nombre": "Revisor"})[0]
+        self.client.force_login(self.admin)
+
+    def _invitar(self, email="nuevo@cliente.com", rol=None, nombre="Ana Pérez"):
+        with self.captureOnCommitCallbacks(execute=True):
+            return self.client.post(
+                reverse("identidad:invitar_usuario"),
+                {"email": email, "nombre_completo": nombre, "rol": str((rol or self.revisor).pk)},
+                **self.HTMX,
+            )
+
+    def _conteos(self):
+        return (Usuario.objects.count(), RolAsignado.objects.count(), EventoAuditoria.objects.count())
+
+    def test_solo_gestionar_usuarios_abre_la_pantalla(self):
+        for codigo in ("gestor_contratista", "seguridad_garita", "revisor_documental", "responsable_area"):
+            with self.subTest(codigo=codigo):
+                otro = usuario_interno(f"{codigo}@cliente.com")
+                asignar_rol(otro, self.organizacion, codigo)
+                self.client.force_login(otro)
+                self.assertEqual(self.client.get(reverse("identidad:usuarios")).status_code, 403)
+                antes = self._conteos()
+                respuesta = self.client.post(
+                    reverse("identidad:invitar_usuario"),
+                    {"email": "x@cliente.com", "nombre_completo": "X", "rol": str(self.revisor.pk)},
+                    **self.HTMX,
+                )
+                self.assertEqual(respuesta.status_code, 403)
+                self.assertEqual(self._conteos(), antes)
+
+    def test_lista_solo_usuarios_internos_de_su_organizacion(self):
+        ajeno = usuario_interno("ajeno@otra.com")
+        asignar_rol(ajeno, self.otra, "revisor_documental")
+        portal = crear_cuenta_portal()
+        asignar_rol(portal, self.organizacion, "contratista")
+
+        respuesta = self.client.get(reverse("identidad:usuarios"))
+
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertContains(respuesta, "admin@cliente.com")
+        self.assertNotContains(respuesta, "ajeno@otra.com")
+        self.assertNotContains(respuesta, "empresa@example.com")
+
+    def test_invitar_crea_usuario_interno_con_rol_y_envia_enlace_de_activacion(self):
+        respuesta = self._invitar()
+
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertEqual(respuesta.headers["HX-Redirect"], reverse("identidad:usuarios"))
+        usuario = Usuario.objects.get(email="nuevo@cliente.com")
+        self.assertEqual(usuario.tipo_cuenta, TipoCuenta.INTERNA)
+        self.assertFalse(usuario.has_usable_password())
+        self.assertTrue(
+            RolAsignado.objects.filter(
+                usuario=usuario, organizacion=self.organizacion, rol=self.revisor, activo=True
+            ).exists()
+        )
+        self.assertTrue(EventoAuditoria.objects.filter(accion="INVITAR_USUARIO", recurso_id=str(usuario.pk)).exists())
+        self.assertEqual(len(mail.outbox), 1)
+        correo = mail.outbox[0]
+        self.assertEqual(correo.to, ["nuevo@cliente.com"])
+        self.assertIn("Tu usuario es: nuevo@cliente.com", correo.body)
+        self.assertNotIn("None", correo.body)
+
+    def test_usuario_invitado_activa_su_cuenta_e_inicia_sesion(self):
+        self._invitar()
+        ruta = "/" + enlace_del_correo(mail.outbox[0]).split("://", 1)[1].split("/", 1)[1]
+        self.client.logout()
+
+        formulario = self.client.get(ruta, follow=True)
+        self.client.post(
+            formulario.redirect_chain[-1][0], {"new_password1": CLAVE_NUEVA, "new_password2": CLAVE_NUEVA}
+        )
+
+        usuario = Usuario.objects.get(email="nuevo@cliente.com")
+        self.assertEqual(authenticate(username="nuevo@cliente.com", password=CLAVE_NUEVA), usuario)
+
+    def test_no_se_ofrecen_ni_aceptan_roles_de_portal_ni_de_plataforma(self):
+        for codigo, plataforma in (("contratista", False), ("trabajador", False), ("admin_plataforma", True)):
+            with self.subTest(codigo=codigo):
+                rol = Rol.objects.get_or_create(
+                    codigo=codigo, defaults={"nombre": codigo, "es_rol_plataforma": plataforma}
+                )[0]
+                formulario = self.client.get(reverse("identidad:invitar_usuario"), **self.HTMX)
+                self.assertNotContains(formulario, str(rol.pk))
+                antes = self._conteos()
+                self._invitar(email=f"{codigo}@cliente.com", rol=rol)
+                self.assertEqual(self._conteos(), antes)
+                self.assertEqual(len(mail.outbox), 0)
+
+    def test_correo_de_cuenta_de_portal_no_recibe_rol_interno(self):
+        portal = crear_cuenta_portal(email="contratista@example.com")
+        antes = self._conteos()
+
+        respuesta = self._invitar(email="contratista@example.com")
+
+        self.assertContains(respuesta, "cuenta de portal")
+        self.assertEqual(self._conteos(), antes)
+        self.assertFalse(RolAsignado.objects.filter(usuario=portal, rol=self.revisor).exists())
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_usuario_interno_existente_recibe_solo_aviso_sin_enlace(self):
+        existente = usuario_interno("existente@otra.com")
+        asignar_rol(existente, self.otra, "revisor_documental")
+
+        self._invitar(email="existente@otra.com")
+
+        self.assertTrue(RolAsignado.objects.filter(usuario=existente, organizacion=self.organizacion).exists())
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertNotIn("/activar/", mail.outbox[0].body)
+        existente.refresh_from_db()
+        self.assertTrue(existente.check_password("UnaClaveSegura123!"))
+
+    def test_desactivar_rol_quita_el_acceso_y_audita(self):
+        usuario = usuario_interno("revisor@cliente.com")
+        rol_asignado = asignar_rol(usuario, self.organizacion, "revisor_documental")
+
+        respuesta = self.client.post(
+            reverse("identidad:desactivar_rol", args=[rol_asignado.pk]), {"motivo": "Dejó la empresa"}, **self.HTMX
+        )
+
+        self.assertEqual(respuesta.headers["HX-Redirect"], reverse("identidad:usuarios"))
+        rol_asignado.refresh_from_db()
+        self.assertFalse(rol_asignado.activo)
+        self.assertTrue(EventoAuditoria.objects.filter(accion="REVOCAR_ROL", recurso_id=str(rol_asignado.pk)).exists())
+        self.client.force_login(usuario)
+        self.assertEqual(self.client.get(reverse("cumplimiento:bandeja")).status_code, 403)
+
+    def test_desactivar_exige_motivo(self):
+        usuario = usuario_interno("revisor@cliente.com")
+        rol_asignado = asignar_rol(usuario, self.organizacion, "revisor_documental")
+
+        self.client.post(reverse("identidad:desactivar_rol", args=[rol_asignado.pk]), {"motivo": ""}, **self.HTMX)
+
+        rol_asignado.refresh_from_db()
+        self.assertTrue(rol_asignado.activo)
+
+    def test_no_puede_desactivar_su_propio_rol_de_administrador(self):
+        respuesta = self.client.post(
+            reverse("identidad:desactivar_rol", args=[self.rol_admin.pk]), {"motivo": "Prueba"}, **self.HTMX
+        )
+
+        self.assertContains(respuesta, "tu propio rol de administrador")
+        self.rol_admin.refresh_from_db()
+        self.assertTrue(self.rol_admin.activo)
+
+    def test_no_toca_roles_de_otra_organizacion(self):
+        ajeno = usuario_interno("ajeno@otra.com")
+        rol_ajeno = asignar_rol(ajeno, self.otra, "revisor_documental")
+
+        respuesta = self.client.post(
+            reverse("identidad:desactivar_rol", args=[rol_ajeno.pk]), {"motivo": "x"}, **self.HTMX
+        )
+
+        self.assertEqual(respuesta.status_code, 404)
+        rol_ajeno.refresh_from_db()
+        self.assertTrue(rol_ajeno.activo)
+
+    def test_reenviar_acceso_envia_un_enlace_nuevo(self):
+        self._invitar()
+        rol_asignado = RolAsignado.objects.get(usuario__email="nuevo@cliente.com")
+
+        with self.captureOnCommitCallbacks(execute=True):
+            respuesta = self.client.post(reverse("identidad:reenviar_acceso_interno", args=[rol_asignado.pk]))
+
+        self.assertRedirects(respuesta, reverse("identidad:usuarios"), fetch_redirect_response=False)
+        self.assertEqual(len(mail.outbox), 2)
+        self.assertIn("/activar/", mail.outbox[1].body)
+
+    def test_modales_sin_htmx_redirigen_a_la_lista(self):
+        respuesta = self.client.get(reverse("identidad:invitar_usuario"))
+
+        self.assertRedirects(respuesta, reverse("identidad:usuarios"), fetch_redirect_response=False)

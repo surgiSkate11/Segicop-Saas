@@ -61,6 +61,11 @@ PERMISOS = {
 }
 
 
+# Roles que la pantalla de usuarios internos (T2) puede asignar: exactamente los que aparecen en la matriz.
+# Los roles de portal (contratista, trabajador) y el de plataforma nunca se asignan desde ahí.
+ROLES_INTERNOS = frozenset().union(*PERMISOS.values())
+
+
 def _roles_permitidos(accion):
     """Falla cerrado: una acción que no está en la matriz es un error de programación, nunca un permiso."""
     try:

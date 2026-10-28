@@ -24,7 +24,7 @@ Leyenda: ✅ terminado y probado · 🟡 incompleto · 🔴 defectuoso · ⬜ no
 | Permisos de ingreso | 🔴/🟡 | **Se aprueban solos** si la persona está habilitada (`accesos/services.py:81`); el sistema anterior tenía "Pendiente de aprobación". Un permiso es para una persona; el anterior agrupaba cuadrillas. |
 | Permisos de trabajo | 🟡 | Máquina de estados. Falta: tipos de trabajo, actividades, herramientas y equipos, orden de trabajo, emergencia, cuadrilla. |
 | Garita | ✅ | Consulta por código sin datos sensibles. |
-| Alertas | 🟡 | Modelo y lista, exportación CSV. Los jobs diarios existen como funciones pero **no están agendados** (Fase 9). |
+| Alertas | 🟡 | Modelo, lista y exportación CSV/XLSX. El job diario está en Celery beat, pero corre cada 86400 s (sin hora fija), solo alerta lo **ya vencido** (faltan los avisos previos de RF-033) y no envía correos. *(Corregido el 27/10: la primera versión decía que no estaba agendado.)* |
 | **Roles y permisos internos** | 🔴 | **Solo antecedentes valida roles.** El resto de vistas internas solo filtra por organización: cualquier usuario con *cualquier* rol activo (incluida garita) puede crear empresas, aprobar documentos o solicitar ingresos. Contradice "mínimo privilegio" y AC-002/AC-003. |
 | Usuarios internos | ⬜ | Solo desde el admin de Django. No hay pantalla para invitar usuarios internos ni asignar roles/alcances. |
 | Alcance por empresa/instalación | ⬜ | `AlcanceAsignado` existe pero ninguna vista lo usa (gestor "solo sus empresas"). |

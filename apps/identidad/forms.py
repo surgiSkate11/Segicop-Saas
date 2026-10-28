@@ -1,9 +1,12 @@
 from django.contrib.auth.forms import AuthenticationForm, SetPasswordForm
 from django.core.exceptions import ValidationError
+from django import forms
 from django.forms import CharField, PasswordInput, TextInput
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
 from apps.core.forms import EstiloFormMixin
+from apps.identidad.models import Rol
+from apps.identidad.permisos import ROLES_INTERNOS
 
 
 class LoginForm(AuthenticationForm):
@@ -66,3 +69,21 @@ class CorreoAccesoFormMixin:
             campo = self.fields[self.campo_correo_acceso]
             campo.required = True
             campo.help_text = "Aquí llegará el enlace para activar el acceso."
+
+
+class InvitarUsuarioForm(EstiloFormMixin, forms.Form):
+    """T2: el rol solo ofrece los roles internos de la matriz (nunca de portal ni de plataforma)."""
+
+    nombre_completo = forms.CharField(label="Nombre completo", max_length=255)
+    email = forms.EmailField(label="Correo electrónico")
+    rol = forms.ModelChoiceField(label="Rol", queryset=Rol.objects.none(), empty_label="Selecciona un rol")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["rol"].queryset = Rol.objects.filter(
+            codigo__in=ROLES_INTERNOS, es_rol_plataforma=False
+        ).order_by("nombre")
+
+
+class DesactivarRolForm(EstiloFormMixin, forms.Form):
+    motivo = forms.CharField(label="Motivo", widget=forms.Textarea(attrs={"rows": 3}), max_length=500)

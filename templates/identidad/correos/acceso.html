@@ -10,14 +10,14 @@
         <p>Hola, {{ usuario.nombre_completo }}:</p>
         {% if enlace %}
           <p><strong>{{ organizacion.nombre }}</strong> te dio acceso a SIGECOP, el sistema de gestión de contratistas y permisos.</p>
-          <p>Tu usuario es: <strong style="font-family:monospace;font-size:16px;">{{ usuario.nombre_usuario }}</strong></p>
+          <p>Tu usuario es: <strong style="font-family:monospace;font-size:16px;">{{ usuario.nombre_usuario|default:usuario.email }}</strong></p>
           <p style="text-align:center;margin:28px 0;">
             <a href="{{ enlace }}" style="background:#f36f2b;color:#ffffff;text-decoration:none;padding:12px 24px;border-radius:8px;font-weight:bold;">Definir mi contraseña</a>
           </p>
           <p style="font-size:13px;color:#6b7280;">El enlace sirve una sola vez y vence en {{ horas_vigencia }} horas. Si vence, pide a {{ organizacion.nombre }} que te lo reenvíe.</p>
         {% else %}
           <p><strong>{{ organizacion.nombre }}</strong> te dio acceso a SIGECOP con tu cuenta existente.</p>
-          <p>Ingresa con tu usuario <strong style="font-family:monospace;">{{ usuario.nombre_usuario }}</strong> y tu contraseña de siempre en <a href="{{ url_login }}">{{ url_login }}</a>.</p>
+          <p>Ingresa con tu usuario <strong style="font-family:monospace;">{{ usuario.nombre_usuario|default:usuario.email }}</strong> y tu contraseña de siempre en <a href="{{ url_login }}">{{ url_login }}</a>.</p>
         {% endif %}
         <p style="font-size:13px;color:#6b7280;">Nadie de SIGECOP te pedirá tu contraseña. Si no esperabas este correo, ignóralo.</p>
       </td>

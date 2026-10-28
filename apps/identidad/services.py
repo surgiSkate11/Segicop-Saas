@@ -10,7 +10,8 @@ from apps.core.events import emitir_evento
 from apps.core.exceptions import DomainError
 from apps.core.services import crear_alerta
 from apps.identidad.correos import enviar_correo_acceso
-from apps.identidad.models import AlcanceAsignado, Rol, RolAsignado, Usuario
+from apps.identidad.models import AlcanceAsignado, Rol, RolAsignado, TipoCuenta, Usuario
+from apps.identidad.permisos import ADMIN_CLIENTE, ROLES_INTERNOS
 
 logger = logging.getLogger("sigecop.identidad")
 
@@ -25,22 +26,66 @@ ROLES_PORTAL = {
 
 
 @transaction.atomic
-def invitar_usuario(*, email: str, nombre_completo: str, actor=None) -> Usuario:
+def invitar_usuario(*, organizacion, email: str, nombre_completo: str, rol: Rol, actor: Usuario) -> RolAsignado:
     """
-    RF-004: invitar una cuenta "sin revelar si una persona ya existe".
+    T2 / RF-004: invita a un usuario INTERNO a una organización con un rol de la matriz.
+    - Correo nuevo: crea la cuenta sin contraseña usable y envía el enlace de activación (72 h).
+    - Usuario interno existente (p. ej. de otra organización): solo suma el rol y envía un aviso, sin
+      tocar su contraseña.
+    - Un correo de cuenta de portal nunca recibe un rol interno: el middleware del portal le negaría
+      igual las vistas internas, y mezclar ambos tipos de cuenta rompe el aislamiento.
     """
-    usuario, fue_creado = Usuario.objects.get_or_create(
-        email=Usuario.objects.normalize_email(email),
-        defaults={"nombre_completo": nombre_completo, "is_active": False},
-    )
+    if rol.codigo not in ROLES_INTERNOS or rol.es_rol_plataforma:
+        raise DomainError("Ese rol no se puede asignar a un usuario interno.")
+
+    correo = Usuario.objects.normalize_email((email or "").strip())
+    usuario = Usuario.objects.filter(email__iexact=correo).first()
+    if usuario is None:
+        # Sin contraseña: queda inutilizable hasta que el titular la defina desde el enlace.
+        usuario = Usuario.objects.create_user(
+            email=correo, nombre_completo=nombre_completo.strip(), tipo_cuenta=TipoCuenta.INTERNA
+        )
+    elif usuario.es_cuenta_portal:
+        raise DomainError("Ese correo pertenece a una cuenta de portal. Usa otro correo para el usuario interno.")
+    elif not usuario.is_active:
+        raise DomainError("Esa cuenta está desactivada. Pide al administrador de la plataforma que la revise.")
+
+    rol_asignado, _ = RolAsignado.objects.get_or_create(usuario=usuario, organizacion=organizacion, rol=rol)
+    if not rol_asignado.activo:
+        rol_asignado.activo = True
+        rol_asignado.save(update_fields=["activo", "updated_at"])
 
     emitir_evento(
         actor=actor,
-        accion="INVITAR_USUARIO" if fue_creado else "REENVIAR_INVITACION",
+        accion="INVITAR_USUARIO",
         recurso=usuario,
-        motivo="Alta o reenvío de invitación de acceso.",
+        organizacion=organizacion,
+        motivo=f"Rol '{rol.nombre}' asignado a {usuario.email}.",
     )
-    return usuario
+    _programar_correo_acceso(
+        usuario=usuario, organizacion=organizacion, actor=actor, con_enlace=not usuario.has_usable_password()
+    )
+    return rol_asignado
+
+
+@transaction.atomic
+def reenviar_acceso_interno(*, rol_asignado: RolAsignado, actor: Usuario) -> None:
+    """T2: nuevo enlace de activación (también sirve si la persona olvidó su contraseña)."""
+    if not rol_asignado.activo:
+        raise DomainError("El rol está desactivado: no se reenvía el acceso.")
+    _programar_correo_acceso(
+        usuario=rol_asignado.usuario, organizacion=rol_asignado.organizacion, actor=actor, con_enlace=True
+    )
+
+
+def desactivar_rol_interno(*, rol_asignado: RolAsignado, actor: Usuario, motivo: str) -> None:
+    """T2: desactiva un rol interno con motivo (RN-004). Nadie se quita su propio rol de administrador."""
+    motivo = (motivo or "").strip()
+    if not motivo:
+        raise DomainError("Indica el motivo de la desactivación.")
+    if rol_asignado.usuario_id == actor.pk and rol_asignado.rol.codigo == ADMIN_CLIENTE:
+        raise DomainError("No puedes desactivar tu propio rol de administrador.")
+    revocar_rol(rol_asignado=rol_asignado, actor=actor, motivo=motivo)
 
 
 @transaction.atomic

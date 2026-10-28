@@ -4,6 +4,12 @@ from django.urls import path
 from apps.identidad.forms import LoginForm
 from apps.identidad.views import ActivarCuentaView, PanelView
 from apps.identidad.views_alertas import AlertasView, ExportarAlertasView
+from apps.identidad.views_usuarios import (
+    DesactivarRolModalView,
+    InvitarUsuarioModalView,
+    ReenviarAccesoInternoView,
+    UsuarioListView,
+)
 
 app_name = "identidad"
 
@@ -22,4 +28,8 @@ urlpatterns = [
     path("alertas/", AlertasView.as_view(), name="alertas"),
     path("alertas/<uuid:pk>/leer/", AlertasView.as_view(), name="alerta_leer"),
     path("reportes/alertas.csv", ExportarAlertasView.as_view(), name="exportar_alertas"),
+    path("usuarios/", UsuarioListView.as_view(), name="usuarios"),
+    path("usuarios/invitar/", InvitarUsuarioModalView.as_view(), name="invitar_usuario"),
+    path("usuarios/roles/<uuid:pk>/desactivar/", DesactivarRolModalView.as_view(), name="desactivar_rol"),
+    path("usuarios/roles/<uuid:pk>/reenviar/", ReenviarAccesoInternoView.as_view(), name="reenviar_acceso_interno"),
 ]
