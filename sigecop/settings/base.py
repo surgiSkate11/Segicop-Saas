@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     "apps.antecedentes",
     "apps.accesos",
     "apps.trabajos",
+    "apps.reportes",
     "apps.portal",
 ]
 

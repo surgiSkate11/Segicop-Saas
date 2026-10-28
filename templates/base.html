@@ -81,6 +81,12 @@
         <span class="sc-nav-label">Trabajos</span>
       </a>
       {% endif %}
+      {% if 'ver_registros' in acciones_permitidas %}
+      <a href="{% url 'reportes:indice' %}" class="sc-nav-item {% block nav_reportes %}{% endblock %}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
+        <span class="sc-nav-label">Reportes</span>
+      </a>
+      {% endif %}
       {% if 'ver_alertas' in acciones_permitidas %}
       <a href="{% url 'identidad:alertas' %}" class="sc-nav-item {% block nav_alertas %}{% endblock %}">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg>

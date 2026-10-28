@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block titulo %}{{ reporte.titulo }} · SIGECOP{% endblock %}
+{% block nav_reportes %}activo{% endblock %}
+{% block migas %}<a href="{% url 'reportes:indice' %}">Reportes</a> <span class="sc-migas__sep">/</span> <strong>{{ reporte.titulo }}</strong>{% endblock %}
+
+{% block contenido %}
+  <div class="sc-cabecera-lista">
+    <div>
+      <p class="sc-etiqueta-seccion">Reportes</p>
+      <h1>{{ reporte.titulo }}</h1>
+      <p class="sc-subtitulo !mb-0">{{ reporte.descripcion }}</p>
+    </div>
+    {% if 'exportar_reportes' in acciones_permitidas %}
+      <a href="{% url reporte.url_excel %}?{{ consulta }}" class="sc-boton-primario">Descargar a Excel</a>
+    {% endif %}
+  </div>
+
+  <form method="get" class="sc-tarjeta mb-4 flex flex-wrap items-end gap-3">
+    <label class="grid gap-1">
+      <span>Empresa</span>
+      <select name="empresa" class="sc-input">
+        <option value="">Todas</option>
+        {% for empresa in empresas %}
+          <option value="{{ empresa.pk }}" {% if filtros.empresa == empresa.pk|stringformat:"s" %}selected{% endif %}>{{ empresa.razon_social }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% if reporte.con_fechas %}
+      <label class="grid gap-1"><span>Caduca desde</span><input type="date" name="desde" value="{{ filtros.desde|default:'' }}" class="sc-input"></label>
+      <label class="grid gap-1"><span>Caduca hasta</span><input type="date" name="hasta" value="{{ filtros.hasta|default:'' }}" class="sc-input"></label>
+    {% endif %}
+    <label class="grid gap-1 grow">
+      <span>Buscar</span>
+      <input type="search" name="q" value="{{ filtros.q }}" placeholder="Cédula, nombre{% if reporte.con_fechas %} o documento{% endif %}" class="sc-input">
+    </label>
+    <button type="submit" class="sc-boton-primario">Buscar</button>
+    <a href="{% url reporte.url %}" class="sc-boton-secundario">Limpiar</a>
+  </form>
+
+  {% if filas %}
+    <div class="sc-tabla-meta"><span>{{ total }} registro{{ total|pluralize }}</span></div>
+    <div class="sc-tabla-envoltorio">
+      <table class="sc-tabla">
+        <thead><tr>{% for clave, etiqueta in columnas %}<th>{{ etiqueta }}</th>{% endfor %}</tr></thead>
+        <tbody>
+          {% for fila in filas %}
+            <tr>
+              <td><span class="sc-dato-mono">{{ fila.cedula }}</span></td>
+              <td>{{ fila.trabajador }}</td>
+              <td>{{ fila.empresa|default:"—" }}</td>
+              {% if reporte.con_fechas %}
+                <td>{{ fila.documento }}</td>
+                <td>{{ fila.estado }}</td>
+                <td>{{ fila.fecha_emision|date:"d/m/Y"|default:"—" }}</td>
+                <td>{{ fila.fecha_caducidad|date:"d/m/Y"|default:"—" }}</td>
+              {% else %}
+                <td><span class="sc-dato-mono">{{ fila.ruc|default:"—" }}</span></td>
+                <td>{{ fila.cargo|default:"—" }}</td>
+                <td>{{ fila.estado_documental }}</td>
+                <td>{{ fila.habilitado }}</td>
+                <td>{{ fila.fecha_nacimiento|date:"d/m/Y"|default:"—" }}</td>
+                <td>{{ fila.correo|default:"—" }}</td>
+                <td>{{ fila.telefono|default:"—" }}</td>
+              {% endif %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if pagina.has_other_pages %}
+      <nav class="sc-tabla-meta" aria-label="Paginación">
+        {% if pagina.has_previous %}<a class="sc-enlace-control" href="?{{ consulta }}&page={{ pagina.previous_page_number }}">Anterior</a>{% endif %}
+        <span>Página {{ pagina.number }} de {{ pagina.paginator.num_pages }}</span>
+        {% if pagina.has_next %}<a class="sc-enlace-control" href="?{{ consulta }}&page={{ pagina.next_page_number }}">Siguiente</a>{% endif %}
+      </nav>
+    {% endif %}
+  {% else %}
+    <div class="sc-vacio"><p>No hay registros con estos filtros.</p></div>
+  {% endif %}
+{% endblock %}

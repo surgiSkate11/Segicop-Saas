@@ -18,6 +18,8 @@ Branch: `feat/cierre-sigecop`. Read until `## Log` before working.
 
 - S9 — Document inbox like the previous system (T6). Previous system (screenshot "Documentos" inbox): row checkbox for bulk selection, "Gestión" (Nuevo/Actualización), editable "Fecha emisión", "Fecha de caducidad", Aprobar/Rechazar. Requirements: "RF-032 Aprobar, observar o rechazar con motivo, evidencia y notificación." "RN-001 Ningún archivo aprobado se sobrescribe". Implementation: the inbox lists the current document of each requirement EN_REVISION with Gestión (version 1 = Nuevo, later = Actualización), upload date and expiry; users with `revisar_documentos` get row checkboxes, an optional emission date per row and bulk Approve / Observe / Reject (observe and reject require one shared comment). A bulk decision is all-or-nothing, creates one Revision + one audit event per document, and only accepts current documents whose requirement is EN_REVISION in organizations where the user has `revisar_documentos`. The emission date is stored on the Revision (documents are immutable), cannot be in the future nor after the document expiry. The single-document review form also accepts it.
 
+- S10 — Reports (T8). Previous system "Informes": "Documentos Trabajadores" (Código, Cédula, Trabajador, Empresa, Nombre documento, Estado, Fecha emisión, Fecha caducidad) and "Información Trabajadores" (Cédula, Trabajador, Estado, Estado de documentos, Fecha nacimiento, RUC, Contratista, Posición, Correo, Teléfono...), each with company/date filters, keyword search, "Descargar a Excel". Requirements: "RF-063 Exportar información autorizada con fecha, filtros y trazabilidad." "RN-009 Las exportaciones sensibles requieren autorización, finalidad y auditoría." Implementation: new app `apps/reportes` (last in the dependency chain because it reads every domain app). Viewing a report needs `ver_registros`; the Excel export needs `exportar_reportes` and is audited with `ExportacionAuditoria` (filters, rows, SHA-256) plus an `EXPORTAR_<REPORTE>` event. "Información de trabajadores" shows enablement (Sí/No from `calcular_habilitacion`) and NEVER the antecedentes result (constitution §2.7), unlike the previous system; the antecedentes report waits for director P15.
+
 ## Tasks
 
 - T1 — S1-S4, S6 — permission matrix module + deny-by-default mixin in every internal view + nav filtering + tests — worker (crashed) + inline — done, commit faca434 (see L3)
@@ -29,7 +31,8 @@ Branch: `feat/cierre-sigecop`. Read until `## Log` before working.
 - T5c — S8 — digest audit: record "scheduled" before sending and "sent OK" only after SMTP succeeds (GGA note on 496c908) — inline — done, see git log
 - T6 — S9 — bulk document review with Gestión and emission date — inline — done, see git log (431 tests OK)
 - T7 — "Por hacer" on the home panel: documents to approve grouped by company (HTMX fragment served by cumplimiento so identidad keeps backward-only deps), inbox filter ?empresa= — inline — done, see git log
-- T8..T14 — see plan in `odd/diagnostico-sigecop.md` §6 — pending
+- T8 — S10 — reports app: worker documents + worker information, filters, audited Excel — inline — done, see git log
+- T9..T14 — see plan in `odd/diagnostico-sigecop.md` §6 — pending
 
 ## Log
 

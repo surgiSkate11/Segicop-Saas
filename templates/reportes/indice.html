@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block titulo %}Reportes · SIGECOP{% endblock %}
+{% block nav_reportes %}activo{% endblock %}
+{% block migas %}Espacio de trabajo <span class="sc-migas__sep">/</span> <strong>Reportes</strong>{% endblock %}
+
+{% block contenido %}
+  <div class="sc-cabecera-lista">
+    <div>
+      <p class="sc-etiqueta-seccion">Reportes</p>
+      <h1>Informes</h1>
+      <p class="sc-subtitulo !mb-0">Consulta la información de tu organización con filtros{% if 'exportar_reportes' in acciones_permitidas %} y descárgala a Excel{% endif %}.</p>
+    </div>
+  </div>
+  <div class="sc-grilla-stats">
+    {% for reporte in reportes %}
+      <a href="{% url reporte.url %}" class="sc-tarjeta-stat">
+        <div class="sc-tarjeta-stat__texto">
+          <span class="sc-tarjeta-stat__titulo">{{ reporte.titulo }}</span>
+          <span class="sc-texto-muted">{{ reporte.descripcion }}</span>
+        </div>
+      </a>
+    {% endfor %}
+  </div>
+{% endblock %}
