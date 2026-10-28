@@ -8,28 +8,70 @@
     <div>
       <p class="sc-etiqueta-seccion">Documentos</p>
       <h1>Bandeja de revisión</h1>
-      <p class="sc-subtitulo !mb-0">Requisitos con una versión de documento esperando decisión.</p>
+      <p class="sc-subtitulo !mb-0">Documentos esperando decisión. {% if puede_revisar %}Selecciona varios para aprobarlos, observarlos o rechazarlos de una vez.{% endif %}</p>
     </div>
     <a href="{% url 'cumplimiento:catalogo' %}" class="sc-boton-secundario">Ver catálogo de requisitos</a>
   </div>
 
   {% if requisitos %}
+    {% if puede_revisar %}<form method="post" action="{% url 'cumplimiento:revisar_lote' %}" id="sc-revision-lote">{% csrf_token %}{% endif %}
     <div class="sc-tabla-meta"><span>{{ requisitos|length }} revisiones pendientes</span><span class="sc-tabla-meta__hint">Ordenadas por fecha de llegada</span></div>
     <div class="sc-tabla-envoltorio">
       <table class="sc-tabla">
-        <thead><tr><th>Requisito</th><th>Empresa / Persona</th><th>Estado</th><th></th></tr></thead>
+        <thead>
+          <tr>
+            {% if puede_revisar %}
+              <th><input type="checkbox" aria-label="Seleccionar todos"
+                         onclick="document.querySelectorAll('input[name=documentos]').forEach(c => c.checked = this.checked)"></th>
+            {% endif %}
+            <th>Requisito</th>
+            <th>Empresa / Persona</th>
+            <th>Gestión</th>
+            <th>Cargado</th>
+            <th>Vence</th>
+            {% if puede_revisar %}<th>Fecha de emisión</th>{% endif %}
+            <th></th>
+          </tr>
+        </thead>
         <tbody>
           {% for requisito in requisitos %}
+            {% with documento=requisito.vigentes.0 %}
             <tr>
+              {% if puede_revisar %}
+                <td>{% if documento %}<input type="checkbox" name="documentos" value="{{ documento.pk }}" aria-label="Seleccionar {{ requisito.catalogo.nombre }}">{% endif %}</td>
+              {% endif %}
               <td>{{ requisito.catalogo.nombre }}</td>
               <td>{{ requisito.empresa|default:requisito.persona }}</td>
-              <td><span class="sc-estado sc-estado--{{ requisito.estado|lower }}">{{ requisito.get_estado_display }}</span></td>
-              <td><a class="sc-enlace-control" href="{% url 'cumplimiento:detalle' requisito.pk %}">Revisar</a></td>
+              <td>{% if documento.version > 1 %}Actualización{% elif documento %}Nuevo{% endif %}</td>
+              <td>{{ documento.created_at|date:"d/m/Y" }}</td>
+              <td>{{ documento.fecha_vencimiento|date:"d/m/Y"|default:"—" }}</td>
+              {% if puede_revisar %}
+                <td>{% if documento %}<input type="date" class="sc-input" name="fecha_emision_{{ documento.pk }}" aria-label="Fecha de emisión de {{ requisito.catalogo.nombre }}">{% endif %}</td>
+              {% endif %}
+              <td><a class="sc-enlace-control" href="{% url 'cumplimiento:detalle' requisito.pk %}">Ver documento</a></td>
             </tr>
+            {% endwith %}
           {% endfor %}
         </tbody>
       </table>
     </div>
+    {% if puede_revisar %}
+      <div class="sc-tarjeta mt-4 grid gap-3">
+        <label class="grid gap-1">
+          <span>Comentario <small>(obligatorio para observar o rechazar)</small></span>
+          <textarea name="comentario" rows="2" class="sc-input"></textarea>
+        </label>
+        <div class="flex flex-wrap gap-2">
+          {% for valor, etiqueta in decisiones %}
+            <button type="submit" name="decision" value="{{ valor }}"
+                    class="{% if valor == 'APROBADO' %}sc-boton-primario{% else %}sc-boton-secundario{% endif %}">
+              {{ etiqueta }} seleccionados
+            </button>
+          {% endfor %}
+        </div>
+      </div>
+    </form>
+    {% endif %}
   {% else %}
     <div class="sc-vacio">
       <p>No hay nada pendiente de revisión en este momento.</p>

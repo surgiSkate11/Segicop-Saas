@@ -1,4 +1,7 @@
+from datetime import date
+
 from django.contrib import messages
+from django.db.models import Prefetch
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
@@ -7,13 +10,19 @@ from django.views.generic import ListView
 from apps.core.exceptions import DomainError
 from apps.cumplimiento import services
 from apps.cumplimiento.forms import AsignarRequisitoForm, CatalogoRequisitoForm, RevisionForm, SubirDocumentoForm
-from apps.cumplimiento.models import CatalogoRequisito, EstadoRequisito, RequisitoAplicado
+from apps.cumplimiento.models import CatalogoRequisito, DocumentoVersion, EstadoRequisito, RequisitoAplicado, Revision
 from apps.core.modals import exito_htmx, render_modal
 from apps.identidad.mixins import RequierePermisoMixin
-from apps.identidad.permisos import exigir, organizacion_con_permiso, organizaciones_con_permiso
+from apps.identidad.permisos import exigir, organizacion_con_permiso, organizaciones_con_permiso, puede
 
 
 class BandejaRevisionView(RequierePermisoMixin, ListView):
+    """
+    S9: como la bandeja del sistema anterior. Cada fila es la versión vigente de un requisito en revisión,
+    con Gestión (versión 1 = Nuevo, siguientes = Actualización). La selección masiva solo aparece para
+    quien tiene `revisar_documentos`; el POST la vuelve a exigir (RevisarLoteView).
+    """
+
     accion_requerida = "ver_registros"
     model = RequisitoAplicado
     template_name = "cumplimiento/bandeja.html"
@@ -26,8 +35,55 @@ class BandejaRevisionView(RequierePermisoMixin, ListView):
                 organizacion_id__in=self.organizaciones_permitidas(), estado=EstadoRequisito.EN_REVISION
             )
             .select_related("catalogo", "empresa", "persona")
+            .prefetch_related(
+                Prefetch("documentos", queryset=DocumentoVersion.objects.filter(vigente=True), to_attr="vigentes")
+            )
             .order_by("created_at")
         )
+
+    def get_context_data(self, **kwargs):
+        contexto = super().get_context_data(**kwargs)
+        contexto["puede_revisar"] = puede(self.request.user, "revisar_documentos")
+        contexto["decisiones"] = Revision.Decision.choices
+        return contexto
+
+
+class RevisarLoteView(RequierePermisoMixin, View):
+    """S9: aprobar, observar o rechazar varios documentos a la vez (todo o nada)."""
+
+    accion_requerida = "revisar_documentos"
+    http_method_names = ["post"]
+
+    def post(self, request):
+        ids = request.POST.getlist("documentos")
+        documentos = list(
+            DocumentoVersion.objects.select_related(
+                "requisito_aplicado__catalogo", "requisito_aplicado__empresa", "requisito_aplicado__persona"
+            ).filter(pk__in=ids, organizacion_id__in=self.organizaciones_permitidas())
+        )
+        try:
+            if len(documentos) != len(set(ids)):
+                raise DomainError("Algún documento seleccionado no existe o no puedes revisarlo.")
+            fechas = {}
+            for documento in documentos:
+                valor = request.POST.get(f"fecha_emision_{documento.pk}", "").strip()
+                if valor:
+                    try:
+                        fechas[documento.pk] = date.fromisoformat(valor)
+                    except ValueError:
+                        raise DomainError(f"Fecha de emisión inválida: {valor}.") from None
+            revisiones = services.revisar_documentos_en_lote(
+                documentos=documentos,
+                revisor=request.user,
+                decision=request.POST.get("decision", ""),
+                comentario=request.POST.get("comentario", "").strip(),
+                fechas_emision=fechas,
+            )
+        except DomainError as error:
+            messages.error(request, f"No se aplicó ninguna decisión. {error}")
+        else:
+            messages.success(request, f"Decisión registrada en {len(revisiones)} documentos.")
+        return redirect("cumplimiento:bandeja")
 
 
 class RequisitoDetalleView(RequierePermisoMixin, View):
@@ -102,6 +158,7 @@ class RequisitoDetalleView(RequierePermisoMixin, View):
             revisor=request.user,
             decision=form.cleaned_data["decision"],
             comentario=form.cleaned_data["comentario"],
+            fecha_emision=form.cleaned_data["fecha_emision"],
         )
         messages.success(request, "Decisión registrada.")
 

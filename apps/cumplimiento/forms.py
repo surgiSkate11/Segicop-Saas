@@ -20,6 +20,12 @@ class RevisionForm(forms.Form):
     comentario = forms.CharField(
         label="Comentario", required=False, widget=forms.Textarea(attrs={"class": "sc-input", "rows": 3})
     )
+    fecha_emision = forms.DateField(
+        label="Fecha de emisión",
+        required=False,
+        widget=forms.DateInput(attrs={"class": "sc-input", "type": "date"}),
+        help_text="La que figura en el documento (opcional).",
+    )
 
 
 class CatalogoRequisitoForm(EstiloFormMixin, forms.Form):

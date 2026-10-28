@@ -123,6 +123,11 @@ class Revision(OrganizacionScopedModel):
     revisor = models.ForeignKey("identidad.Usuario", on_delete=models.PROTECT, related_name="revisiones_realizadas")
     decision = models.CharField(max_length=20, choices=Decision.choices)
     comentario = models.TextField(blank=True)
+    fecha_emision = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Fecha de emisión que el revisor leyó en el documento (el documento en sí es inmutable).",
+    )
 
     class Meta:
         verbose_name = "Revisión"

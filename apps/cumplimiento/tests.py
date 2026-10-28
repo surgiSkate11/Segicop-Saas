@@ -460,3 +460,140 @@ class JobDiarioYNotificacionesTests(TestCase):
         self.assertFalse(eventos.filter(accion="ENVIAR_RESUMEN_ALERTAS", resultado="OK").exists())
         self.assertTrue(eventos.filter(accion="ENVIAR_RESUMEN_ALERTAS", resultado="ERROR").exists())
         self.assertTrue(AlertaNotificacion.objects.filter(tipo="RESUMEN_NO_ENVIADO", severidad="ALTA").exists())
+
+
+class RevisionEnLoteTests(TestCase):
+    """T6 / S9: bandeja como la del sistema anterior, con selección masiva, Gestión y fecha de emisión."""
+
+    def setUp(self):
+        self.organizacion = Organizacion.objects.create(nombre="Minera del Sur")
+        self.otra = Organizacion.objects.create(nombre="Otra minera")
+        self.gestor = usuario_con_rol(self.organizacion, "gestor_contratista")
+        self.revisor = usuario_con_rol(self.organizacion, "revisor_documental")
+        self.empresa = EmpresaContratista.objects.create(
+            organizacion=self.organizacion, razon_social="Transportes Andinos", ruc="1790000000009"
+        )
+        self.documentos = [self._subir(codigo) for codigo in ("ruc", "poliza", "iess")]
+        self.client.force_login(self.revisor)
+
+    def _subir(self, codigo, organizacion=None, empresa=None):
+        organizacion = organizacion or self.organizacion
+        catalogo = CatalogoRequisito.objects.create(
+            organizacion=organizacion, codigo=codigo, nombre=f"Requisito {codigo}", aplica_a=AplicaA.EMPRESA
+        )
+        requisito = services.asignar_requisito(catalogo=catalogo, empresa=empresa or self.empresa, actor=self.gestor)
+        return services.subir_documento(
+            requisito_aplicado=requisito,
+            archivo=ContentFile(codigo.encode(), name=f"{codigo}.pdf"),
+            actor=self.gestor,
+            fecha_vencimiento=date.today() + timedelta(days=365),
+        )
+
+    def _post(self, documentos, decision="APROBADO", comentario="", **fechas):
+        datos = {"documentos": [str(d.pk) for d in documentos], "decision": decision, "comentario": comentario}
+        datos.update({f"fecha_emision_{d.pk}": valor for d, valor in fechas.get("fechas", {}).items()})
+        return self.client.post(reverse("cumplimiento:revisar_lote"), datos)
+
+    def _conteos(self):
+        return (
+            Revision.objects.count(),
+            EventoAuditoria.objects.count(),
+            list(RequisitoAplicado.objects.order_by("pk").values_list("estado", flat=True)),
+        )
+
+    def test_aprobar_en_lote_crea_una_revision_y_un_evento_por_documento(self):
+        emision = date.today() - timedelta(days=10)
+
+        respuesta = self._post(self.documentos, fechas={self.documentos[0]: emision.isoformat()})
+
+        self.assertRedirects(respuesta, reverse("cumplimiento:bandeja"), fetch_redirect_response=False)
+        for documento in self.documentos:
+            documento.requisito_aplicado.refresh_from_db()
+            self.assertEqual(documento.requisito_aplicado.estado, EstadoRequisito.APROBADO)
+            self.assertEqual(documento.revisiones.get().revisor, self.revisor)
+        self.assertEqual(EventoAuditoria.objects.filter(accion="REVISAR_DOCUMENTO_APROBADO").count(), 3)
+        self.assertEqual(self.documentos[0].revisiones.get().fecha_emision, emision)
+        self.assertIsNone(self.documentos[1].revisiones.get().fecha_emision)
+
+    def test_rechazar_u_observar_en_lote_exige_comentario(self):
+        for decision in ("RECHAZADO", "OBSERVADO"):
+            with self.subTest(decision=decision):
+                antes = self._conteos()
+                respuesta = self._post(self.documentos, decision=decision, comentario="")
+                self.assertEqual(self._conteos(), antes)
+                self.assertContains(self.client.get(respuesta.url), "requiere un comentario")
+
+        self._post(self.documentos[:2], decision="RECHAZADO", comentario="Documento ilegible")
+        self.assertEqual(Revision.objects.filter(decision="RECHAZADO", comentario="Documento ilegible").count(), 2)
+
+    def test_el_lote_es_todo_o_nada(self):
+        services.revisar_documento(documento_version=self.documentos[2], revisor=self.revisor, decision="APROBADO")
+        antes = self._conteos()
+
+        self._post(self.documentos)
+
+        self.assertEqual(self._conteos(), antes)
+
+    def test_documento_de_otra_organizacion_no_se_revisa(self):
+        empresa_ajena = EmpresaContratista.objects.create(
+            organizacion=self.otra, razon_social="Ajena", ruc="1790000000010"
+        )
+        ajeno = self._subir("ajeno", organizacion=self.otra, empresa=empresa_ajena)
+        antes = self._conteos()
+
+        self._post([self.documentos[0], ajeno])
+
+        self.assertEqual(self._conteos(), antes)
+
+    def test_sin_revisar_documentos_responde_403_y_no_escribe(self):
+        self.client.force_login(self.gestor)
+        antes = self._conteos()
+
+        respuesta = self._post(self.documentos)
+
+        self.assertEqual(respuesta.status_code, 403)
+        self.assertEqual(self._conteos(), antes)
+
+    def test_fecha_de_emision_no_puede_ser_futura_ni_posterior_al_vencimiento(self):
+        futura = date.today() + timedelta(days=1)
+        posterior = date.today() + timedelta(days=400)
+        for fecha in (futura, posterior):
+            with self.subTest(fecha=fecha):
+                if fecha == posterior:
+                    DocumentoVersion.objects.filter(pk=self.documentos[0].pk).update(
+                        fecha_vencimiento=date.today() - timedelta(days=1)
+                    )
+                    fecha = date.today()
+                antes = self._conteos()
+                self._post(self.documentos, fechas={self.documentos[0]: fecha.isoformat()})
+                self.assertEqual(self._conteos(), antes)
+
+    def test_bandeja_muestra_gestion_y_seleccion_solo_a_quien_revisa(self):
+        actualizado = services.subir_documento(
+            requisito_aplicado=self.documentos[0].requisito_aplicado,
+            archivo=ContentFile(b"ruc v2", name="ruc2.pdf"),
+            actor=self.gestor,
+        )
+
+        respuesta = self.client.get(reverse("cumplimiento:bandeja"))
+
+        self.assertContains(respuesta, "Nuevo")
+        self.assertContains(respuesta, "Actualización")
+        self.assertContains(respuesta, f'value="{actualizado.pk}"')
+        self.assertContains(respuesta, reverse("cumplimiento:revisar_lote"))
+
+        self.client.force_login(self.gestor)
+        respuesta = self.client.get(reverse("cumplimiento:bandeja"))
+        self.assertNotContains(respuesta, reverse("cumplimiento:revisar_lote"))
+        self.assertNotContains(respuesta, 'name="documentos"')
+
+    def test_revision_individual_guarda_la_fecha_de_emision(self):
+        emision = date.today() - timedelta(days=3)
+        requisito = self.documentos[0].requisito_aplicado
+
+        self.client.post(
+            reverse("cumplimiento:detalle", args=[requisito.pk]),
+            {"accion": "revisar", "decision": "APROBADO", "comentario": "", "fecha_emision": emision.isoformat()},
+        )
+
+        self.assertEqual(self.documentos[0].revisiones.get().fecha_emision, emision)

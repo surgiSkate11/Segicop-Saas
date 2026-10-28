@@ -16,6 +16,8 @@ Branch: `feat/cierre-sigecop`. Read until `## Log` before working.
 
 - S8 — Daily job and notifications (T5). Requirements: "RF-033 Alertar antes del vencimiento mediante umbrales configurables." "RF-060 Enviar alertas por vencimiento, observación, aprobación, rechazo y suspensión." "RF-061 Evitar duplicados mediante plantillas, preferencias e idempotencia." "Un trabajo programado evalúa vigencias diariamente. Las alertas se agrupan para evitar saturación." Implementation: (a) the beat entry runs at a fixed hour (crontab, default 06:00 America/Guayaquil, env `SIGECOP_JOB_DIARIO_HORA`); (b) an approved requirement whose current document expires within a threshold of `SIGECOP_DIAS_AVISO_VENCIMIENTO` (default 30,7) gets ONE pre-expiry alert per threshold crossed (the smallest threshold that covers the remaining days), never duplicated by re-runs; (c) once per organization and day, users with the new matrix action `recibir_resumen_alertas` (admin_cliente only until director P21) receive one email digest of the alerts created that day; no alerts → no email; a re-run the same day sends nothing. Who else receives notifications and the threshold values are director decisions (P21).
 
+- S9 — Document inbox like the previous system (T6). Previous system (screenshot "Documentos" inbox): row checkbox for bulk selection, "Gestión" (Nuevo/Actualización), editable "Fecha emisión", "Fecha de caducidad", Aprobar/Rechazar. Requirements: "RF-032 Aprobar, observar o rechazar con motivo, evidencia y notificación." "RN-001 Ningún archivo aprobado se sobrescribe". Implementation: the inbox lists the current document of each requirement EN_REVISION with Gestión (version 1 = Nuevo, later = Actualización), upload date and expiry; users with `revisar_documentos` get row checkboxes, an optional emission date per row and bulk Approve / Observe / Reject (observe and reject require one shared comment). A bulk decision is all-or-nothing, creates one Revision + one audit event per document, and only accepts current documents whose requirement is EN_REVISION in organizations where the user has `revisar_documentos`. The emission date is stored on the Revision (documents are immutable), cannot be in the future nor after the document expiry. The single-document review form also accepts it.
+
 ## Tasks
 
 - T1 — S1-S4, S6 — permission matrix module + deny-by-default mixin in every internal view + nav filtering + tests — worker (crashed) + inline — done, commit faca434 (see L3)
@@ -25,7 +27,8 @@ Branch: `feat/cierre-sigecop`. Read until `## Log` before working.
 - T5 — S8 — fixed-hour daily job, pre-expiry alerts, daily alert email digest — inline — done, commit 496c908 (see L5)
 - T5b — RN-005 — compute "today" in America/Guayaquil (not UTC) in accesos, antecedentes and cumplimiento — inline — done, commit: see L6
 - T5c — S8 — digest audit: record "scheduled" before sending and "sent OK" only after SMTP succeeds (GGA note on 496c908) — inline — done, see git log
-- T6..T14 — see plan in `odd/diagnostico-sigecop.md` §6 — pending
+- T6 — S9 — bulk document review with Gestión and emission date — inline — done, see git log (431 tests OK)
+- T7..T14 — see plan in `odd/diagnostico-sigecop.md` §6 — pending
 
 ## Log
 
