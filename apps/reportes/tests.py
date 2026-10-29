@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from django.core.files.base import ContentFile
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 from openpyxl import load_workbook
 
 from apps.accesos.models import EstadoPermiso, EventoAcceso, PermisoIngreso, TipoEvento
@@ -294,7 +295,7 @@ class ReportesIngresoTests(TestCase):
         ReportesTests.setUp(self)
         self.norte = Instalacion.objects.create(organizacion=self.organizacion, nombre="Planta Norte")
         self.sur = Instalacion.objects.create(organizacion=self.organizacion, nombre="Planta Sur")
-        hoy = date.today()
+        hoy = timezone.localdate()
         self.permiso_ana = PermisoIngreso.objects.create(
             organizacion=self.organizacion, persona=self.ana, instalacion=self.norte, estado=EstadoPermiso.APROBADO,
             fecha_inicio_vigencia=hoy, fecha_fin_vigencia=hoy + timedelta(days=30), aprobado_por=self.admin,
@@ -336,16 +337,16 @@ class ReportesIngresoTests(TestCase):
             (ana["empresa"], ana["planta"], ana["estado"], ana["aprobado_por"]),
             ("Transportes Andinos", "Planta Norte", "Aprobado", "admin_cliente"),
         )
-        self.assertEqual(ana["fecha_solicitud"], date.today())
+        self.assertEqual(ana["fecha_solicitud"], timezone.localdate())
         self.assertNotContains(respuesta, "Planta Ajena")
 
     def test_solicitudes_filtra_por_contratista_planta_estado_y_fechas(self):
         self.assertEqual(self._cedulas("solicitudes_ingreso", empresa=str(self.pacifico.pk)), ["0911111111"])
         self.assertEqual(self._cedulas("solicitudes_ingreso", planta=str(self.norte.pk)), ["0102030405"])
         self.assertEqual(self._cedulas("solicitudes_ingreso", estado="RECHAZADO"), ["0911111111"])
-        manana = (date.today() + timedelta(days=1)).isoformat()
+        manana = (timezone.localdate() + timedelta(days=1)).isoformat()
         self.assertEqual(self._cedulas("solicitudes_ingreso", desde=manana), [])
-        self.assertEqual(len(self._cedulas("solicitudes_ingreso", hasta=date.today().isoformat())), 2)
+        self.assertEqual(len(self._cedulas("solicitudes_ingreso", hasta=timezone.localdate().isoformat())), 2)
         # Invalid values are ignored; they never widen what the user can see.
         self.assertEqual(len(self._cedulas("solicitudes_ingreso", estado="INVENTADO", planta="x")), 2)
 
@@ -361,7 +362,7 @@ class ReportesIngresoTests(TestCase):
         self.assertEqual(self._cedulas("historico_accesos", empresa=str(self.andinos.pk)), ["0102030405"])
         self.assertEqual(self._cedulas("historico_accesos", planta=str(self.sur.pk)), ["0911111111"])
         self.assertEqual(self._cedulas("historico_accesos", estado="ENTRADA"), ["0102030405"])
-        ayer = (date.today() - timedelta(days=1)).isoformat()
+        ayer = (timezone.localdate() - timedelta(days=1)).isoformat()
         self.assertEqual(self._cedulas("historico_accesos", hasta=ayer), [])
 
     def test_cada_reporte_tiene_una_celda_por_columna(self):
