@@ -9,12 +9,17 @@ spreadsheet would read as a formula get a leading apostrophe (OWASP recommendati
 PREFIJOS_FORMULA = ("=", "+", "-", "@", "\t", "\r")
 
 
-def agregar_fila_xlsx(hoja, valores):
-    """Appends one row to an openpyxl sheet keeping every text cell as plain text."""
-    hoja.append(valores)
-    for celda in hoja[hoja.max_row]:
-        if celda.data_type == "f":
-            celda.data_type = "s"
+def escribir_filas_xlsx(hoja, filas, desde_fila=2):
+    """
+    Writes rows below the header keeping every text cell as plain text.
+
+    Rows are addressed by number: `hoja.max_row` scans every cell, so using it per row is quadratic.
+    """
+    for numero, valores in enumerate(filas, start=desde_fila):
+        for columna, valor in enumerate(valores, start=1):
+            celda = hoja.cell(row=numero, column=columna, value=valor)
+            if celda.data_type == "f":
+                celda.data_type = "s"
 
 
 def valor_csv(valor):
