@@ -18,6 +18,7 @@ from openpyxl import Workbook
 from apps.accesos.models import EventoAcceso, PermisoIngreso
 from apps.accesos.services import calcular_habilitacion
 from apps.core.events import emitir_evento
+from apps.core.exportacion import agregar_fila_xlsx
 from apps.core.models import ExportacionAuditoria
 from apps.cumplimiento.models import DocumentoVersion, RequisitoAplicado
 from apps.identidad.models import Organizacion
@@ -262,7 +263,7 @@ def exportar_xlsx(*, reporte, filas, actor, organizaciones_ids, filtros):
     hoja.title = reporte.replace("_", " ").title()[:31]
     hoja.append([etiqueta for _, etiqueta in columnas])
     for fila in filas:
-        hoja.append([fila[clave] for clave, _ in columnas])
+        agregar_fila_xlsx(hoja, [fila[clave] for clave, _ in columnas])
     hoja.freeze_panes = "A2"
     for columna in hoja.columns:
         hoja.column_dimensions[columna[0].column_letter].width = min(

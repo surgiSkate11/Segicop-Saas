@@ -217,6 +217,17 @@ class ReportesTests(TestCase):
         self.assertNotIn("Antecedentes", [celda.value for celda in hoja[1]])
 
 
+    def test_exportar_no_convierte_datos_del_usuario_en_formulas(self):
+        """T14 / D1: a name written as a formula is exported as plain text."""
+        Persona.objects.filter(pk=self.ana.pk).update(nombres="=1+1")
+
+        respuesta = self._get("informacion_trabajadores_excel")
+
+        hoja = load_workbook(io.BytesIO(respuesta.content)).active
+        celdas = [celda for fila in hoja.iter_rows(min_row=2) for celda in fila]
+        self.assertFalse([celda.coordinate for celda in celdas if celda.data_type == "f"])
+        self.assertIn("=1+1 Pruebas", [celda.value for celda in celdas])
+
 class ExpedientePersonaTests(TestCase):
     """T13 / S11: chronological person file (RF-023) without the antecedentes result."""
 

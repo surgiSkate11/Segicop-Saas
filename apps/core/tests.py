@@ -132,6 +132,26 @@ class NotificacionTests(TestCase):
         self.assertEqual(exportacion.filas, 1)
 
 
+    def test_texto_que_empieza_como_formula_se_exporta_como_texto(self):
+        """T14 / D1: user-written text never becomes a spreadsheet formula (CSV/formula injection)."""
+        organizacion = Organizacion.objects.create(nombre="Organización inyección")
+        actor = Usuario.objects.create_user(email="inyeccion@example.com", nombre_completo="Exportador")
+        crear_alerta(
+            organizacion=organizacion,
+            clave_idempotencia="ALERTA:FORMULA",
+            tipo="PRUEBA",
+            agrupador="PRUEBAS",
+            titulo='=HYPERLINK("http://malicioso.example","clic")',
+            mensaje="Título con fórmula.",
+        )
+
+        contenido, _ = exportar_alertas_xlsx(organizaciones_ids=[organizacion.id], actor=actor)
+        celda = load_workbook(BytesIO(contenido)).active["D2"]
+        self.assertEqual((celda.data_type, celda.value), ("s", '=HYPERLINK("http://malicioso.example","clic")'))
+
+        contenido_csv, _ = exportar_alertas_csv(organizaciones_ids=[organizacion.id], actor=actor)
+        self.assertIn("'=HYPERLINK(", contenido_csv)
+
 class ConfiguracionCorreoTests(TestCase):
     """S11: el remitente/servidor SMTP se configura desde el panel administrativo."""
 
