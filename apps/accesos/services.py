@@ -43,7 +43,7 @@ def calcular_habilitacion(persona: Persona) -> ResultadoHabilitacion:
             False, f"La empresa '{empresa.razon_social}' está en estado {empresa.get_estado_display()}."
         )
 
-    hoy = timezone.now().date()
+    hoy = timezone.localdate()
     verificacion = (
         # Una autorización revocada deja de habilitar: la verificación se conserva, pero ya no se usa.
         persona.verificaciones_antecedentes.filter(estado=EstadoVerificacion.VALIDADA)
@@ -135,7 +135,7 @@ def registrar_evento_acceso(*, codigo, instalacion, tipo: str, actor) -> EventoA
 
 
 def marcar_vencidos(actor=None) -> int:
-    hoy = timezone.now().date()
+    hoy = timezone.localdate()
     permisos = PermisoIngreso.objects.filter(estado=EstadoPermiso.APROBADO, fecha_fin_vigencia__lt=hoy)
     total = permisos.count()
     for permiso in permisos:

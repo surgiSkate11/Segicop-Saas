@@ -106,8 +106,14 @@ def subir_documento(*, requisito_aplicado, archivo, actor, fecha_vencimiento=Non
 
 
 @transaction.atomic
-def revisar_documento(*, documento_version, revisor, decision: str, comentario: str = "") -> Revision:
-    """RN-007: decisión de autenticidad/cumplimiento, nunca se mezcla con antecedentes ni habilitación."""
+def revisar_documento(
+    *, documento_version, revisor, decision: str, comentario: str = "", fecha_emision=None
+) -> Revision:
+    """
+    RN-007: decisión de autenticidad/cumplimiento, nunca se mezcla con antecedentes ni habilitación.
+    `fecha_emision` (opcional) es la que el revisor leyó en el documento; se guarda en la revisión.
+    """
+    _validar_fecha_emision(fecha_emision, documento_version)
     if decision not in Revision.Decision.values:
         raise DomainError(f"Decisión de revisión inválida: {decision}")
     if decision == Revision.Decision.OBSERVADO and not comentario:
@@ -121,6 +127,7 @@ def revisar_documento(*, documento_version, revisor, decision: str, comentario: 
         revisor=revisor,
         decision=decision,
         comentario=comentario,
+        fecha_emision=fecha_emision,
     )
 
     requisito_aplicado = documento_version.requisito_aplicado
@@ -138,14 +145,59 @@ def revisar_documento(*, documento_version, revisor, decision: str, comentario: 
         recurso=revision,
         organizacion=documento_version.organizacion,
         motivo=comentario or "Sin comentario.",
+        metadata={"fecha_emision": fecha_emision.isoformat()} if fecha_emision else None,
     )
     _recalcular(empresa=requisito_aplicado.empresa, persona=requisito_aplicado.persona, actor=revisor)
     return revision
 
 
+def _validar_fecha_emision(fecha_emision, documento_version):
+    if fecha_emision is None:
+        return
+    if fecha_emision > timezone.localdate():
+        raise DomainError("La fecha de emisión no puede ser futura.")
+    if documento_version.fecha_vencimiento and fecha_emision > documento_version.fecha_vencimiento:
+        raise DomainError("La fecha de emisión no puede ser posterior al vencimiento del documento.")
+
+
+@transaction.atomic
+def revisar_documentos_en_lote(
+    *, documentos, revisor, decision: str, comentario: str = "", fechas_emision=None
+) -> list[Revision]:
+    """
+    T6 / S9: la misma decisión para varios documentos, todo o nada. Cada documento recibe su propia
+    Revision y su propio evento (pasa por `revisar_documento`). Solo se aceptan versiones vigentes cuyo
+    requisito espera revisión: una versión vieja o ya resuelta invalida el lote completo.
+    """
+    documentos = list(documentos)
+    if not documentos:
+        raise DomainError("Selecciona al menos un documento.")
+    fechas_emision = fechas_emision or {}
+    revisiones = []
+    for documento in documentos:
+        requisito = documento.requisito_aplicado
+        if not documento.vigente or requisito.estado != EstadoRequisito.EN_REVISION:
+            raise DomainError(
+                f"'{requisito.catalogo.nombre}' de {requisito.empresa or requisito.persona} ya no espera revisión."
+            )
+        try:
+            revisiones.append(
+                revisar_documento(
+                    documento_version=documento,
+                    revisor=revisor,
+                    decision=decision,
+                    comentario=comentario,
+                    fecha_emision=fechas_emision.get(documento.pk),
+                )
+            )
+        except DomainError as error:
+            raise DomainError(f"{requisito.catalogo.nombre}: {error}") from error
+    return revisiones
+
+
 def _expirar_vencidos(requisitos_obligatorios, actor=None):
     """Detección perezosa de vencimiento en cada recálculo (el job diario de Fase 9 hace lo mismo en bloque)."""
-    hoy = timezone.now().date()
+    hoy = timezone.localdate()
     for requisito in requisitos_obligatorios:
         if requisito.estado != EstadoRequisito.APROBADO:
             continue

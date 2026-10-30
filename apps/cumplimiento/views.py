@@ -1,5 +1,8 @@
+import uuid
+from datetime import date
+
 from django.contrib import messages
-from django.contrib.auth.mixins import LoginRequiredMixin
+from django.db.models import Prefetch, Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
@@ -8,43 +11,164 @@ from django.views.generic import ListView
 from apps.core.exceptions import DomainError
 from apps.cumplimiento import services
 from apps.cumplimiento.forms import AsignarRequisitoForm, CatalogoRequisitoForm, RevisionForm, SubirDocumentoForm
-from apps.cumplimiento.models import CatalogoRequisito, EstadoRequisito, RequisitoAplicado
+from apps.cumplimiento.models import CatalogoRequisito, DocumentoVersion, EstadoRequisito, RequisitoAplicado, Revision
 from apps.core.modals import exito_htmx, render_modal
-from apps.identidad.context_processors import organizacion_actual
+from apps.identidad.mixins import RequierePermisoMixin
+from apps.personas.models import Asignacion
+from apps.identidad.permisos import exigir, organizacion_con_permiso, organizaciones_con_permiso
 
 
-def _organizaciones_del_usuario(usuario):
-    return usuario.roles_asignados.filter(activo=True).values_list("organizacion_id", flat=True)
+class BandejaRevisionView(RequierePermisoMixin, ListView):
+    """
+    S9: como la bandeja del sistema anterior. Cada fila es la versión vigente de un requisito en revisión,
+    con Gestión (versión 1 = Nuevo, siguientes = Actualización). La selección masiva solo aparece para
+    quien tiene `revisar_documentos`; el POST la vuelve a exigir (RevisarLoteView).
+    """
 
-
-class BandejaRevisionView(LoginRequiredMixin, ListView):
+    accion_requerida = "ver_registros"
     model = RequisitoAplicado
     template_name = "cumplimiento/bandeja.html"
     context_object_name = "requisitos"
     paginate_by = 25
 
-    def get_queryset(self):
-        organizaciones_ids = _organizaciones_del_usuario(self.request.user)
+    def _requisitos_en_revision(self):
         return (
-            RequisitoAplicado.objects.filter(organizacion_id__in=organizaciones_ids, estado=EstadoRequisito.EN_REVISION)
+            RequisitoAplicado.objects.filter(
+                organizacion_id__in=self.organizaciones_permitidas(), estado=EstadoRequisito.EN_REVISION
+            )
             .select_related("catalogo", "empresa", "persona")
+            .prefetch_related(
+                Prefetch("documentos", queryset=DocumentoVersion.objects.filter(vigente=True), to_attr="vigentes")
+            )
             .order_by("created_at")
         )
 
+    def get_queryset(self):
+        requisitos = self._requisitos_en_revision()
+        empresa_id = _uuid_o_none(self.request.GET.get("empresa"))
+        if empresa_id:
+            # T7: los documentos de la compañía y los de sus trabajadores con una asignación activa.
+            requisitos = requisitos.filter(
+                Q(empresa_id=empresa_id)
+                | Q(persona__asignaciones__empresa_id=empresa_id, persona__asignaciones__activa=True)
+            ).distinct()
+        return requisitos
 
-class RequisitoDetalleView(LoginRequiredMixin, View):
+    def get_context_data(self, **kwargs):
+        contexto = super().get_context_data(**kwargs)
+        # La selección se ofrece por fila: un revisor en A que solo lee en B no ve casillas en filas de B.
+        contexto["organizaciones_revision"] = set(organizaciones_con_permiso(self.request.user, "revisar_documentos"))
+        contexto["puede_revisar"] = bool(contexto["organizaciones_revision"])
+        contexto["decisiones"] = Revision.Decision.choices
+        return contexto
+
+
+def _uuid_o_none(valor):
+    try:
+        return uuid.UUID(valor) if valor else None
+    except ValueError:
+        return None
+
+
+class PorHacerView(RequierePermisoMixin, View):
+    """
+    T7: fragmento HTMX "Por hacer" del panel, como el inicio del sistema anterior: documentos por aprobar
+    agrupados por compañía. Vive en `cumplimiento` (el panel solo lo carga por URL) para que `identidad`
+    no dependa de una app posterior. Un documento de una persona cuenta para la compañía de su asignación
+    activa más antigua; sin asignación activa va a "Sin compañía asignada".
+    """
+
+    accion_requerida = "revisar_documentos"
+    template_name = "cumplimiento/_por_hacer.html"
+
+    def dispatch(self, request, *args, **kwargs):
+        if not request.htmx:
+            return redirect("cumplimiento:bandeja")
+        return super().dispatch(request, *args, **kwargs)
+
+    def get(self, request):
+        requisitos = RequisitoAplicado.objects.filter(
+            organizacion_id__in=self.organizaciones_permitidas(), estado=EstadoRequisito.EN_REVISION
+        ).select_related("empresa", "persona")
+        asignaciones = {}
+        for asignacion in (
+            Asignacion.objects.filter(persona_id__in={r.persona_id for r in requisitos if r.persona_id}, activa=True)
+            .select_related("empresa")
+            .order_by("fecha_inicio", "created_at")
+        ):
+            asignaciones.setdefault(asignacion.persona_id, asignacion.empresa)
+        companias = {}
+        for requisito in requisitos:
+            empresa = requisito.empresa or asignaciones.get(requisito.persona_id)
+            clave = empresa.pk if empresa else None
+            fila = companias.setdefault(
+                clave, {"id": clave, "nombre": empresa.razon_social if empresa else "Sin compañía asignada", "total": 0}
+            )
+            fila["total"] += 1
+        filas = sorted(companias.values(), key=lambda fila: (-fila["total"], fila["nombre"]))
+        return render(request, self.template_name, {"companias": filas})
+
+
+class RevisarLoteView(RequierePermisoMixin, View):
+    """S9: aprobar, observar o rechazar varios documentos a la vez (todo o nada)."""
+
+    accion_requerida = "revisar_documentos"
+    http_method_names = ["post"]
+
+    def post(self, request):
+        try:
+            try:
+                ids = {uuid.UUID(valor) for valor in request.POST.getlist("documentos")}
+            except ValueError:
+                raise DomainError("La selección contiene un documento inválido.") from None
+            documentos = list(
+                DocumentoVersion.objects.select_related(
+                    "requisito_aplicado__catalogo", "requisito_aplicado__empresa", "requisito_aplicado__persona"
+                ).filter(pk__in=ids, organizacion_id__in=self.organizaciones_permitidas())
+            )
+            if len(documentos) != len(ids):
+                raise DomainError("Algún documento seleccionado no existe o no puedes revisarlo.")
+            fechas = {}
+            for documento in documentos:
+                valor = request.POST.get(f"fecha_emision_{documento.pk}", "").strip()
+                if valor:
+                    try:
+                        fechas[documento.pk] = date.fromisoformat(valor)
+                    except ValueError:
+                        raise DomainError(f"Fecha de emisión inválida: {valor}.") from None
+            revisiones = services.revisar_documentos_en_lote(
+                documentos=documentos,
+                revisor=request.user,
+                decision=request.POST.get("decision", ""),
+                comentario=request.POST.get("comentario", "").strip(),
+                fechas_emision=fechas,
+            )
+        except DomainError as error:
+            messages.error(request, f"No se aplicó ninguna decisión. {error}")
+        else:
+            messages.success(request, f"Decisión registrada en {len(revisiones)} documentos.")
+        return redirect("cumplimiento:bandeja")
+
+
+class RequisitoDetalleView(RequierePermisoMixin, View):
+    """
+    Ver exige `ver_registros`. El POST exige, además, la acción que pide el formulario:
+    subir → `subir_documentos`, revisar → `revisar_documentos`.
+    """
+
+    accion_requerida = {"GET": "ver_registros", "POST": "ver_registros"}
+    acciones_post = {"subir": "subir_documentos", "revisar": "revisar_documentos"}
     template_name = "cumplimiento/detalle_requisito.html"
 
-    def _get_requisito(self, pk):
-        organizaciones_ids = _organizaciones_del_usuario(self.request.user)
+    def _get_requisito(self, pk, accion):
         return get_object_or_404(
             RequisitoAplicado.objects.select_related("catalogo", "empresa", "persona"),
             pk=pk,
-            organizacion_id__in=organizaciones_ids,
+            organizacion_id__in=organizaciones_con_permiso(self.request.user, accion),
         )
 
     def get(self, request, pk):
-        requisito = self._get_requisito(pk)
+        requisito = self._get_requisito(pk, "ver_registros")
         contexto = {
             "requisito": requisito,
             "documentos": requisito.documentos.select_related("subido_por").prefetch_related("revisiones"),
@@ -55,8 +179,11 @@ class RequisitoDetalleView(LoginRequiredMixin, View):
         return render(request, self.template_name, contexto)
 
     def post(self, request, pk):
-        requisito = self._get_requisito(pk)
         accion = request.POST.get("accion")
+        permiso = self.acciones_post.get(accion)
+        if permiso is not None:
+            exigir(request.user, permiso)
+        requisito = self._get_requisito(pk, permiso or "ver_registros")
         try:
             if accion == "subir":
                 self._subir(request, requisito)
@@ -95,24 +222,24 @@ class RequisitoDetalleView(LoginRequiredMixin, View):
             revisor=request.user,
             decision=form.cleaned_data["decision"],
             comentario=form.cleaned_data["comentario"],
+            fecha_emision=form.cleaned_data["fecha_emision"],
         )
         messages.success(request, "Decisión registrada.")
 
 
-class CatalogoListView(LoginRequiredMixin, ListView):
+class CatalogoListView(RequierePermisoMixin, ListView):
     """Catálogo de requisitos configurables — antes solo existía en el admin."""
 
+    accion_requerida = "ver_registros"
     template_name = "cumplimiento/catalogo.html"
     context_object_name = "catalogo"
     paginate_by = 25
 
     def get_queryset(self):
-        return CatalogoRequisito.objects.filter(
-            organizacion_id__in=_organizaciones_del_usuario(self.request.user)
-        ).order_by("nombre")
+        return CatalogoRequisito.objects.filter(organizacion_id__in=self.organizaciones_permitidas()).order_by("nombre")
 
 
-class _ModalCumplimientoView(LoginRequiredMixin, View):
+class _ModalCumplimientoView(RequierePermisoMixin, View):
     def dispatch(self, request, *args, **kwargs):
         if not request.htmx:
             return redirect("cumplimiento:catalogo")
@@ -120,6 +247,8 @@ class _ModalCumplimientoView(LoginRequiredMixin, View):
 
 
 class CatalogoRequisitoModalView(_ModalCumplimientoView):
+    accion_requerida = "configurar_catalogo"
+
     def get(self, request):
         return render_modal(
             request,
@@ -132,7 +261,7 @@ class CatalogoRequisitoModalView(_ModalCumplimientoView):
     def post(self, request):
         form = CatalogoRequisitoForm(request.POST)
         if form.is_valid():
-            organizacion = organizacion_actual(request).get("organizacion_actual")
+            organizacion = organizacion_con_permiso(request.user, self.accion_actual)
             if organizacion is None:
                 form.add_error(None, "Tu usuario no tiene una organización asignada.")
             else:
@@ -155,10 +284,10 @@ class CatalogoRequisitoModalView(_ModalCumplimientoView):
 
 
 class AsignarRequisitoModalView(_ModalCumplimientoView):
+    accion_requerida = "asignar_requisitos"
+
     def _catalogo(self, request, pk):
-        return get_object_or_404(
-            CatalogoRequisito, pk=pk, organizacion_id__in=_organizaciones_del_usuario(request.user)
-        )
+        return get_object_or_404(CatalogoRequisito, pk=pk, organizacion_id__in=self.organizaciones_permitidas())
 
     def _modal(self, request, form, catalogo):
         return render_modal(

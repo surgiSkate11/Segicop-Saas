@@ -125,6 +125,49 @@
     </form>
   {% endif %}
 
+  {% if puede_cargar_judicial %}
+    <div class="sc-banner">
+      <div>
+        <p class="sc-banner__titulo">Consulta en la Función Judicial (e-SATJE)</p>
+        <p class="sc-banner__detalle">
+          Busca la cédula <strong>{{ verificacion.persona.numero_documento }}</strong> en el portal oficial y carga la captura o el PDF de la búsqueda.
+          SIGECOP no interpreta la evidencia: siempre la decide un revisor de antecedentes.
+        </p>
+        <a class="sc-enlace-control" href="{{ satje_url }}" target="_blank" rel="noopener noreferrer">Abrir e-SATJE en otra pestaña</a>
+      </div>
+    </div>
+    <form method="post" enctype="multipart/form-data" style="margin-bottom: 24px;">
+      {% csrf_token %}
+      <input type="hidden" name="accion" value="cargar_evidencia_judicial">
+      <label class="sc-zona-carga" data-zona-carga
+             style="display:block; border:2px dashed var(--borde, #ccc); border-radius:12px; padding:24px; text-align:center; cursor:pointer;">
+        <p class="sc-banner__titulo">Cargar la evidencia de e-SATJE</p>
+        <p class="sc-banner__detalle">PDF, PNG o JPEG de la búsqueda (máximo 10 MB).</p>
+        <input type="file" name="archivo" accept="{{ acepta_evidencia_judicial }}">
+      </label>
+      <noscript><button type="submit" class="sc-boton-primario" style="margin-top:8px;">Subir evidencia</button></noscript>
+    </form>
+  {% endif %}
+
+  {% if evidencias_judiciales %}
+    <p class="sc-etiqueta-seccion">Evidencia de la Función Judicial</p>
+    <div class="sc-tabla-envoltorio" style="margin-bottom: 24px;">
+      <table class="sc-tabla">
+        <tbody>
+          {% for evidencia in evidencias_judiciales %}
+            <tr>
+              <td>{{ evidencia.created_at|date:"d/m/Y H:i" }}</td>
+              <td>{{ evidencia.nombre_original }}</td>
+              <td>{{ evidencia.estado_validacion }}{% if evidencia.codigo_error %} · {{ evidencia.codigo_error }}{% endif %}</td>
+              <td><a class="sc-enlace-control" href="{% url 'antecedentes:descargar-documento' evidencia.pk %}">Descargar evidencia</a></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="sc-texto-muted" style="margin-bottom: 24px;">SIGECOP no lee estas evidencias: revísalas antes de decidir. La descarga queda auditada.</p>
+  {% endif %}
+
   {% if documento %}
     <p class="sc-etiqueta-seccion">Certificado cargado</p>
     <div class="sc-tabla-envoltorio" style="margin-bottom: 24px;">

@@ -16,6 +16,9 @@ class PersonaForm(CorreoAccesoFormMixin, EstiloFormMixin, forms.Form):
     )
     contacto_telefono = forms.CharField(label="Teléfono", max_length=30, required=False)
     contacto_email = forms.EmailField(label="Correo", required=False)
+    nacionalidad = forms.CharField(max_length=60, required=False)
+    domicilio = forms.CharField(max_length=255, required=False)
+    telefono_emergencia = forms.CharField(label="Teléfono de emergencia", max_length=30, required=False)
 
 
 class AsignarPersonaForm(EstiloFormMixin, forms.Form):

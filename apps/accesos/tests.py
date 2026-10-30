@@ -1,13 +1,24 @@
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
+from datetime import timezone as dt_timezone
+from unittest import mock
+from zoneinfo import ZoneInfo
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
+from django.urls import reverse
 from django.utils import timezone
 
-from apps.accesos.models import EstadoPermiso, EventoAcceso, TipoEvento
-from apps.accesos.services import calcular_habilitacion, registrar_evento_acceso, solicitar_permiso_ingreso
+from apps.accesos.models import EstadoPermiso, EventoAcceso, PermisoIngreso, TipoEvento
+from apps.accesos.services import (
+    calcular_habilitacion,
+    marcar_vencidos,
+    registrar_evento_acceso,
+    solicitar_permiso_ingreso,
+)
+from apps.antecedentes import services as antecedentes_services
 from apps.antecedentes.models import EstadoVerificacion, ModoConector, ResultadoAntecedentes, VerificacionAntecedentes
 from apps.core.choices import EstadoCumplimiento
 from apps.core.exceptions import DomainError
+from apps.core.models import EventoAuditoria
 from apps.empresas.models import EmpresaContratista
 from apps.identidad.models import Instalacion, Organizacion, Rol, RolAsignado, Usuario
 from apps.personas.models import Asignacion, Persona, TipoDocumento
@@ -233,3 +244,179 @@ class GaritaTests(TestCase):
                 tipo=TipoEvento.ENTRADA,
                 actor=otro_usuario,
             )
+
+
+HTMX = {"HTTP_HX_REQUEST": "true"}
+
+
+def usuario_con_rol(organizacion, codigo, activo=True):
+    usuario = Usuario.objects.create_user(
+        email=f"{codigo}@cliente.com", nombre_completo=codigo, password="UnaClaveSegura123!"
+    )
+    rol, _ = Rol.objects.get_or_create(codigo=codigo, defaults={"nombre": codigo})
+    RolAsignado.objects.create(usuario=usuario, organizacion=organizacion, rol=rol, activo=activo)
+    return usuario
+
+
+class AccesosPermisosTests(TestCase):
+    """S3: las vistas de accesos deniegan por defecto según la matriz de roles."""
+
+    def setUp(self):
+        self.organizacion = Organizacion.objects.create(nombre="Cliente de accesos")
+        self.admin = usuario_con_rol(self.organizacion, "admin_cliente")
+        self.instalacion = Instalacion.objects.create(organizacion=self.organizacion, nombre="Garita norte")
+        self.persona = Persona.objects.create(
+            organizacion=self.organizacion,
+            tipo_documento=TipoDocumento.CEDULA,
+            numero_documento="0607080910",
+            nombres="Carlos",
+            apellidos="Acceso",
+        )
+        self.permiso = solicitar_permiso_ingreso(
+            persona=self.persona,
+            instalacion=self.instalacion,
+            actor=self.admin,
+            fecha_inicio_vigencia=date.today(),
+            fecha_fin_vigencia=date.today() + timedelta(days=1),
+        )
+        self.datos_solicitud = {
+            "instalacion": self.instalacion.pk,
+            "fecha_inicio_vigencia": date.today().isoformat(),
+            "fecha_fin_vigencia": (date.today() + timedelta(days=2)).isoformat(),
+        }
+        self.datos_garita = {
+            "codigo": str(self.permiso.codigo),
+            "instalacion": self.instalacion.pk,
+            "tipo": TipoEvento.ENTRADA,
+        }
+
+    def _conteos(self):
+        return (PermisoIngreso.objects.count(), EventoAcceso.objects.count(), EventoAuditoria.objects.count())
+
+    def _solicitar(self):
+        return self.client.post(reverse("accesos:solicitar", args=[self.persona.pk]), self.datos_solicitud, **HTMX)
+
+    def test_garita_solo_usa_la_garita(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "seguridad_garita"))
+        antes = self._conteos()
+
+        self.assertEqual(self.client.get(reverse("accesos:lista")).status_code, 403)
+        self.assertEqual(self.client.get(reverse("accesos:detalle", args=[self.permiso.pk])).status_code, 403)
+        self.assertEqual(self.client.get(reverse("accesos:solicitar", args=[self.persona.pk]), **HTMX).status_code, 403)
+        self.assertEqual(self._solicitar().status_code, 403)
+        self.assertEqual(self._conteos(), antes)
+
+        self.assertEqual(self.client.get(reverse("accesos:garita")).status_code, 200)
+        respuesta = self.client.post(reverse("accesos:garita"), self.datos_garita)
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertEqual(EventoAcceso.objects.count(), antes[1] + 1)
+
+    def test_responsable_de_area_solicita_ingreso_y_ve_permisos_pero_no_usa_la_garita(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "responsable_area"))
+
+        respuesta = self._solicitar()
+
+        self.assertEqual(PermisoIngreso.objects.count(), 2)
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertIn("HX-Redirect", respuesta.headers)
+        self.assertEqual(self.client.get(reverse("accesos:lista")).status_code, 200)
+        antes = self._conteos()
+        self.assertEqual(self.client.get(reverse("accesos:garita")).status_code, 403)
+        self.assertEqual(self.client.post(reverse("accesos:garita"), self.datos_garita).status_code, 403)
+        self.assertEqual(self._conteos(), antes)
+
+    def test_gestor_solicita_ingreso(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "gestor_contratista"))
+
+        self._solicitar()
+
+        self.assertEqual(PermisoIngreso.objects.count(), 2)
+
+    def test_revisor_documental_ve_permisos_pero_no_solicita(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "revisor_documental"))
+        antes = self._conteos()
+
+        self.assertEqual(self.client.get(reverse("accesos:lista")).status_code, 200)
+        self.assertEqual(self.client.get(reverse("accesos:detalle", args=[self.permiso.pk])).status_code, 200)
+        self.assertEqual(self._solicitar().status_code, 403)
+        self.assertEqual(self.client.get(reverse("accesos:garita")).status_code, 403)
+
+        self.assertEqual(self._conteos(), antes)
+
+    def test_rol_inactivo_no_otorga_nada(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "responsable_area", activo=False))
+        antes = self._conteos()
+
+        self.assertEqual(self._solicitar().status_code, 403)
+        self.assertEqual(self.client.get(reverse("accesos:lista")).status_code, 403)
+
+        self.assertEqual(self._conteos(), antes)
+
+    def test_admin_cliente_solicita_y_consulta_pero_la_garita_es_solo_del_rol_de_garita(self):
+        self.client.force_login(self.admin)
+
+        self._solicitar()
+        self.assertEqual(PermisoIngreso.objects.count(), 2)
+        self.assertEqual(self.client.get(reverse("accesos:lista")).status_code, 200)
+        self.assertEqual(self.client.get(reverse("accesos:garita")).status_code, 403)
+
+
+def noche_en_ecuador():
+    """21:00 de hoy en America/Guayaquil: en UTC ya es el día siguiente (RN-005)."""
+    hoy = timezone.localdate()
+    noche = datetime.combine(hoy, time(21, 0), tzinfo=ZoneInfo("America/Guayaquil"))
+    # timezone.now() real devuelve UTC: ahí ya es el día siguiente.
+    return noche.astimezone(dt_timezone.utc), hoy
+
+
+class FechaLocalTests(TestCase):
+    """T5b / RN-005: "hoy" se evalúa en America/Guayaquil, nunca con la fecha UTC."""
+
+    # Reutiliza el escenario habilitado sin heredar (y repetir) las pruebas de HabilitacionTests.
+    setUp = HabilitacionTests.setUp
+    crear_verificacion = HabilitacionTests.crear_verificacion
+
+    def test_antecedentes_que_vencen_hoy_siguen_habilitando_por_la_noche(self):
+        noche, hoy = noche_en_ecuador()
+        self.crear_verificacion(vigente_hasta=hoy)
+
+        with mock.patch("django.utils.timezone.now", return_value=noche):
+            resultado = calcular_habilitacion(self.persona)
+
+        self.assertTrue(resultado.habilitado)
+
+    def test_permiso_que_vence_hoy_sigue_vigente_por_la_noche(self):
+        noche, hoy = noche_en_ecuador()
+        self.crear_verificacion()
+        permiso = solicitar_permiso_ingreso(
+            persona=self.persona,
+            instalacion=self.instalacion,
+            actor=self.usuario,
+            fecha_inicio_vigencia=hoy - timedelta(days=1),
+            fecha_fin_vigencia=hoy,
+        )
+
+        with mock.patch("django.utils.timezone.now", return_value=noche):
+            self.assertTrue(permiso.vigente_hoy)
+            self.assertEqual(marcar_vencidos(), 0)
+
+        permiso.refresh_from_db()
+        self.assertEqual(permiso.estado, EstadoPermiso.APROBADO)
+
+    def test_verificacion_que_vence_hoy_no_se_marca_vencida_por_la_noche(self):
+        noche, hoy = noche_en_ecuador()
+        verificacion = self.crear_verificacion(vigente_hasta=hoy)
+
+        with mock.patch("django.utils.timezone.now", return_value=noche):
+            self.assertEqual(antecedentes_services.marcar_vencidas(), 0)
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, EstadoVerificacion.VALIDADA)
+
+    @override_settings(ANTECEDENTES_DIAS_RENOVACION=15)
+    def test_renovacion_no_se_adelanta_un_dia_por_la_noche(self):
+        noche, hoy = noche_en_ecuador()
+        self.crear_verificacion(vigente_hasta=hoy + timedelta(days=16))
+
+        with mock.patch("django.utils.timezone.now", return_value=noche):
+            self.assertEqual(antecedentes_services.programar_renovaciones(), 0)

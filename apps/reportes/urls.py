@@ -1,0 +1,42 @@
+from django.urls import path
+
+from apps.reportes.views import ExpedientePersonaView, ExportarReporteView, IndiceReportesView, ReporteView
+
+app_name = "reportes"
+
+urlpatterns = [
+    path("reportes/", IndiceReportesView.as_view(), name="indice"),
+    path(
+        "reportes/documentos-trabajadores/",
+        ReporteView.as_view(reporte="documentos"),
+        name="documentos_trabajadores",
+    ),
+    path(
+        "reportes/documentos-trabajadores.xlsx",
+        ExportarReporteView.as_view(reporte="documentos"),
+        name="documentos_trabajadores_excel",
+    ),
+    path(
+        "reportes/informacion-trabajadores/",
+        ReporteView.as_view(reporte="informacion"),
+        name="informacion_trabajadores",
+    ),
+    path(
+        "reportes/informacion-trabajadores.xlsx",
+        ExportarReporteView.as_view(reporte="informacion"),
+        name="informacion_trabajadores_excel",
+    ),
+    path("reportes/solicitudes-ingreso/", ReporteView.as_view(reporte="solicitudes"), name="solicitudes_ingreso"),
+    path(
+        "reportes/solicitudes-ingreso.xlsx",
+        ExportarReporteView.as_view(reporte="solicitudes"),
+        name="solicitudes_ingreso_excel",
+    ),
+    path("reportes/historico-accesos/", ReporteView.as_view(reporte="accesos"), name="historico_accesos"),
+    path(
+        "reportes/historico-accesos.xlsx",
+        ExportarReporteView.as_view(reporte="accesos"),
+        name="historico_accesos_excel",
+    ),
+    path("reportes/personas/<uuid:pk>/expediente/", ExpedientePersonaView.as_view(), name="expediente_persona"),
+]

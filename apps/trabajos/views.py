@@ -1,5 +1,4 @@
 from django.contrib import messages
-from django.contrib.auth.mixins import LoginRequiredMixin
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
@@ -7,33 +6,32 @@ from django.views.generic import ListView
 
 from apps.core.exceptions import DomainError
 from apps.empresas.models import EmpresaContratista
+from apps.identidad.mixins import RequierePermisoMixin
 from apps.trabajos import services
 from apps.trabajos.forms import CrearPermisoTrabajoForm
 from apps.trabajos.models import PermisoTrabajo
 from apps.core.modals import exito_htmx, render_modal
 
 
-def _organizaciones_del_usuario(usuario):
-    return usuario.roles_asignados.filter(activo=True).values_list("organizacion_id", flat=True)
-
-
-class PermisoTrabajoListView(LoginRequiredMixin, ListView):
+class PermisoTrabajoListView(RequierePermisoMixin, ListView):
+    accion_requerida = "ver_registros"
     model = PermisoTrabajo
     template_name = "trabajos/lista.html"
     context_object_name = "permisos"
     paginate_by = 25
 
     def get_queryset(self):
-        organizaciones_ids = _organizaciones_del_usuario(self.request.user)
         return (
-            PermisoTrabajo.objects.filter(organizacion_id__in=organizaciones_ids)
+            PermisoTrabajo.objects.filter(organizacion_id__in=self.organizaciones_permitidas())
             .select_related("empresa", "instalacion")
             .order_by("-created_at")
         )
 
 
-class CrearPermisoTrabajoView(LoginRequiredMixin, View):
+class CrearPermisoTrabajoView(RequierePermisoMixin, View):
     """Modal HTMX (antes era una página completa)."""
+
+    accion_requerida = "crear_trabajo"
 
     def dispatch(self, request, *args, **kwargs):
         if not request.htmx:
@@ -41,8 +39,9 @@ class CrearPermisoTrabajoView(LoginRequiredMixin, View):
         return super().dispatch(request, *args, **kwargs)
 
     def _get_empresa(self, request, empresa_pk):
-        organizaciones_ids = _organizaciones_del_usuario(request.user)
-        return get_object_or_404(EmpresaContratista, pk=empresa_pk, organizacion_id__in=organizaciones_ids)
+        return get_object_or_404(
+            EmpresaContratista, pk=empresa_pk, organizacion_id__in=self.organizaciones_permitidas()
+        )
 
     def _modal(self, request, form, empresa):
         return render_modal(
@@ -86,13 +85,16 @@ class CrearPermisoTrabajoView(LoginRequiredMixin, View):
         return exito_htmx(request, mensaje=mensaje, url=reverse("trabajos:detalle", args=[permiso.pk]))
 
 
-class PermisoTrabajoDetalleView(LoginRequiredMixin, View):
+class PermisoTrabajoDetalleView(RequierePermisoMixin, View):
+    """Ver exige `ver_registros`; abrir, suspender, reanudar y cerrar exigen `gestionar_trabajo`."""
+
+    accion_requerida = {"GET": "ver_registros", "POST": "gestionar_trabajo"}
+
     def _get_permiso(self, request, pk):
-        organizaciones_ids = _organizaciones_del_usuario(request.user)
         return get_object_or_404(
             PermisoTrabajo.objects.select_related("empresa", "instalacion").prefetch_related("integrantes"),
             pk=pk,
-            organizacion_id__in=organizaciones_ids,
+            organizacion_id__in=self.organizaciones_permitidas(),
         )
 
     def get(self, request, pk):

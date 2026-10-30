@@ -1383,18 +1383,25 @@ class PermisosAntecedentesTests(BaseAntecedentesTests):
 
     def test_la_lista_de_personas_ofrece_antecedentes_solo_a_quien_puede_operar(self):
         url_iniciar = reverse("antecedentes:iniciar", args=[self.persona.pk])
-        esperado = {self.operador: True, self.revisor2: True, self.garita: False}
-        for usuario, ve_boton in esperado.items():
+        for usuario in (self.operador, self.revisor2):
             with self.subTest(usuario=usuario.email):
                 self.client.force_login(usuario)
 
                 respuesta = self.client.get(reverse("personas:lista"))
 
                 self.assertEqual(respuesta.status_code, 200)
-                if ve_boton:
-                    self.assertContains(respuesta, url_iniciar)
-                else:
-                    self.assertNotContains(respuesta, url_iniciar)
+                self.assertContains(respuesta, url_iniciar)
+
+    def test_garita_no_abre_la_lista_de_personas_ni_ve_el_boton_de_antecedentes(self):
+        # Antes la lista se abría con cualquier rol y solo se ocultaba el botón; ahora garita recibe 403.
+        self.client.force_login(self.garita)
+
+        respuesta = self.client.get(reverse("personas:lista"))
+
+        self.assertEqual(respuesta.status_code, 403)
+        self.assertNotContains(
+            respuesta, reverse("antecedentes:iniciar", args=[self.persona.pk]), status_code=403
+        )
 
 
 class MigracionEstadosTests(TestCase):
@@ -3970,3 +3977,240 @@ class RenovacionTests(BaseAntecedentesTests):
         self.assertFalse(self.renovaciones(falla.persona).exists())
         self.assertTrue(self.renovaciones(sigue.persona).exists())
         self.assertIn("La fuente rechazó esta persona.", "\n".join(registro.output))
+
+
+# --- T12: Función Judicial asistida (e-SATJE). Un hallazgo siempre pasa a revisión; un fallo nunca es favorable. ---
+
+PNG_MINIMO = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x00" * 17
+
+
+class EvidenciaJudicialBase(UIyAPIBase):
+    def subida(self, contenido=PNG_MINIMO, nombre="captura-satje.png", tipo="image/png"):
+        return SimpleUploadedFile(nombre, contenido, content_type=tipo)
+
+    def cargar_judicial(self, verificacion, actor=None, **archivo):
+        return services.cargar_evidencia_judicial(
+            verificacion=verificacion, archivo=self.subida(**archivo), actor=actor or self.operador
+        )
+
+    def consulta_judicial(self, verificacion):
+        return verificacion.consultas_proveedor.filter(proveedor=ProveedorAntecedentes.FUNCION_JUDICIAL).first()
+
+
+class EvidenciaJudicialTests(EvidenciaJudicialBase):
+    """La captura o el PDF de la búsqueda en e-SATJE es evidencia: SIGECOP nunca la interpreta."""
+
+    def test_evidencia_con_el_certificado_pendiente_pasa_el_caso_a_revision_sin_tocar_el_resultado(self):
+        verificacion = self.con_certificado()
+        self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+
+        documento, creado = self.cargar_judicial(verificacion)
+
+        verificacion.refresh_from_db()
+        consulta = self.consulta_judicial(verificacion)
+        self.assertTrue(creado)
+        self.assertEqual(verificacion.estado, E.REQUIERE_REVISION)
+        self.assertEqual(self.estados_bitacora(verificacion)[-1], E.REQUIERE_REVISION)
+        self.assertEqual(verificacion.resultado, ResultadoAntecedentes.NO)  # el del Ministerio, intacto
+        self.assertEqual(verificacion.proveedor, "Ministerio del Interior")
+        self.assertEqual(consulta.estado, EstadoConsulta.COMPLETADA)
+        self.assertEqual(documento.consulta, consulta)
+        self.assertEqual(documento.mime_type, "image/png")
+        self.assertEqual(documento.sha256, hashlib.sha256(PNG_MINIMO).hexdigest())
+        self.assertEqual(documento.nombre_original, "captura-satje.png")
+        self.assertEqual(documento.estado_validacion, "REQUIERE_REVISION")
+        self.assertEqual(documento.resultado_extraido, "")
+        self.assertTrue(documento.archivo.name.endswith(".png"))
+        evento = self.eventos("DOCUMENTO_ANTECEDENTES_RECIBIDO").get(recurso_id=str(documento.pk))
+        self.assertEqual(evento.metadata["proveedor"], ProveedorAntecedentes.FUNCION_JUDICIAL)
+        self.assertEqual(evento.metadata["sha256"], documento.sha256)
+
+    def test_evidencia_previa_al_certificado_desvia_el_certificado_a_revision(self):
+        verificacion, _ = self.verificacion_lista()
+        contenido = crear_pdf(["CONSULTA DE PROCESOS JUDICIALES", "No se encontraron coincidencias"])
+
+        self.cargar_judicial(verificacion, contenido=contenido, nombre="satje.pdf", tipo="application/pdf")
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.LISTA)
+        self.assertIsNone(verificacion.resultado)  # "No se encontraron coincidencias" nunca se lee como favorable
+
+        self.cargar(verificacion, crear_pdf(lineas_certificado()))
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.REQUIERE_REVISION)
+        self.assertEqual(
+            self.estados_bitacora(verificacion)[-3:],
+            [E.DATOS_COINCIDENTES, E.AUTENTICIDAD_PENDIENTE, E.REQUIERE_REVISION],
+        )
+
+    def test_evidencia_ilegible_queda_en_cuarentena_y_no_cambia_nada(self):
+        verificacion, _ = self.verificacion_lista()
+        bitacora = self.bitacora_total()
+
+        with self.assertRaises(services.DocumentoInvalido) as contexto:
+            self.cargar_judicial(verificacion, contenido=b"esto no es una imagen", nombre="captura.png")
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.LISTA)
+        self.assertIsNone(verificacion.resultado)
+        self.assertEqual(self.bitacora_total(), bitacora)
+        self.assertEqual(contexto.exception.documento.estado_validacion, "CUARENTENA")
+        self.assertNotEqual(self.consulta_judicial(verificacion).estado, EstadoConsulta.COMPLETADA)
+        # Un fallo no cuenta como evidencia: el certificado sigue su curso normal.
+        self.cargar(verificacion, crear_pdf(lineas_certificado()))
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.AUTENTICIDAD_PENDIENTE)
+
+    def test_un_formato_no_admitido_ni_siquiera_se_guarda(self):
+        verificacion, _ = self.verificacion_lista()
+
+        for nombre in ("captura.gif", "captura.svg", "satje.html", "sin-extension"):
+            with self.subTest(nombre), self.assertRaises(services.DocumentoInvalido) as contexto:
+                self.cargar_judicial(verificacion, nombre=nombre)
+            self.assertIsNone(contexto.exception.documento)
+
+        self.assertFalse(DocumentoAntecedentes.objects.exists())
+        self.assertFalse(self.eventos("DOCUMENTO_ANTECEDENTES_RECIBIDO").exists())
+        self.assertEqual(self.archivos_guardados(), [])
+
+    def test_el_mismo_archivo_dos_veces_no_duplica_nada(self):
+        verificacion = self.con_certificado()
+        primero, _ = self.cargar_judicial(verificacion)
+
+        segundo, creado = self.cargar_judicial(verificacion)
+
+        self.assertFalse(creado)
+        self.assertEqual(segundo, primero)
+        self.assertEqual(self.consulta_judicial(verificacion).documentos.count(), 1)
+        self.assertEqual(self.eventos("DOCUMENTO_ANTECEDENTES_RECIBIDO").filter(recurso_id=str(primero.pk)).count(), 1)
+
+    def test_solo_se_admite_mientras_el_caso_esta_abierto_y_autorizado(self):
+        for estado in (E.AUTORIZACION_PENDIENTE, E.VALIDADA, E.CANCELADA, E.VENCIDA):
+            with self.subTest(estado):
+                verificacion, _ = self.verificacion_lista(estado)
+                with self.assertRaises(DomainError):
+                    self.cargar_judicial(verificacion)
+                verificacion.refresh_from_db()
+                self.assertEqual(verificacion.estado, estado)
+                self.assertIsNone(self.consulta_judicial(verificacion))
+        self.assertFalse(DocumentoAntecedentes.objects.exists())
+
+    def test_quien_subio_la_evidencia_judicial_no_puede_validar(self):
+        verificacion = self.con_certificado()
+        self.cargar_judicial(verificacion, actor=self.revisor2)
+
+        with self.assertRaisesMessage(DomainError, "Quien cargó el documento no puede validarlo."):
+            services.validar_verificacion(
+                verificacion=verificacion, revisor=self.revisor2, decision=E.VALIDADA, vigente_hasta=date(2027, 1, 1)
+            )
+
+        services.validar_verificacion(
+            verificacion=verificacion, revisor=self.usuario, decision=E.VALIDADA, vigente_hasta=date(2027, 1, 1)
+        )
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.VALIDADA)
+        self.assertEqual(verificacion.validado_por, self.usuario)
+
+    def test_la_evidencia_judicial_no_oculta_un_certificado_de_otra_identidad(self):
+        verificacion, _ = self.verificacion_lista()
+        self.cargar(verificacion, crear_pdf(lineas_certificado(identificacion="2222222222")))
+        self.cargar_judicial(verificacion)  # ahora es el último documento del caso
+
+        with self.assertRaisesMessage(DomainError, "no coincide con la identidad"):
+            services.validar_verificacion(
+                verificacion=verificacion, revisor=self.revisor2, decision=E.VALIDADA, vigente_hasta=date(2027, 1, 1)
+            )
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.REQUIERE_REVISION)
+
+    def test_una_fallida_conserva_el_codigo_del_ministerio_tras_la_evidencia_judicial(self):
+        from apps.antecedentes import api
+
+        verificacion, consulta = self.verificacion_lista(E.FALLIDA)
+        services.cambiar_estado_consulta(
+            consulta=consulta, nuevo_estado=EstadoConsulta.FALLIDA, codigo_error=services.ANT_RATE_LIMITED
+        )
+
+        self.cargar_judicial(verificacion)
+        # En producción la consulta judicial siempre es posterior; aquí el reloj puede repetir el instante.
+        ConsultaProveedor.objects.filter(proveedor=ProveedorAntecedentes.FUNCION_JUDICIAL).update(
+            created_at=consulta.created_at + timedelta(minutes=5)
+        )
+
+        verificacion.refresh_from_db()
+        self.assertEqual(verificacion.estado, E.FALLIDA)  # la evidencia judicial no rescata un fallo
+        self.assertEqual(api._espera_humana(verificacion)[:2], (services.ANT_RATE_LIMITED, "CARGA_MANUAL"))
+
+
+class EvidenciaJudicialUITests(EvidenciaJudicialBase):
+    def setUp(self):
+        super().setUp()
+        self.verificacion, _ = self.verificacion_lista()
+        self.url = reverse("antecedentes:detalle", args=[self.verificacion.pk])
+
+    def subir(self, usuario, contenido=PNG_MINIMO, nombre="captura-satje.png"):
+        self.client.force_login(usuario)
+        archivo = SimpleUploadedFile(nombre, contenido, content_type="image/png")
+        return self.client.post(self.url, {"accion": "cargar_evidencia_judicial", "archivo": archivo}, follow=True)
+
+    def test_el_operador_ve_el_enlace_a_e_satje_con_la_cedula_y_la_zona_de_carga(self):
+        from apps.antecedentes.conectores.funcion_judicial import PORTAL_URL as SATJE_URL
+
+        self.client.force_login(self.operador)
+
+        respuesta = self.client.get(self.url)
+
+        self.assertContains(respuesta, f'href="{SATJE_URL}"')
+        self.assertContains(respuesta, 'target="_blank"')
+        self.assertContains(respuesta, 'value="cargar_evidencia_judicial"')
+        self.assertContains(respuesta, 'accept="application/pdf,image/png,image/jpeg"')
+        self.assertContains(respuesta, self.persona.numero_documento)
+
+    def test_el_operador_sube_la_evidencia_y_no_ve_su_contenido(self):
+        respuesta = self.subir(self.operador)
+
+        self.assertContains(respuesta, "Evidencia de la Función Judicial recibida")
+        self.assertNotContains(respuesta, "Descargar evidencia")
+        self.assertEqual(DocumentoAntecedentes.objects.get().subido_por, self.operador)
+
+    def test_un_archivo_invalido_muestra_el_motivo(self):
+        respuesta = self.subir(self.operador, contenido=b"basura", nombre="captura.png")
+
+        self.assertContains(respuesta, "cuarentena")
+        self.verificacion.refresh_from_db()
+        self.assertEqual(self.verificacion.estado, E.LISTA)
+
+    def test_sin_rol_de_antecedentes_el_caso_no_existe_y_nada_se_guarda(self):
+        for usuario in (self.garita, self.sin_roles, self.ajeno):
+            with self.subTest(usuario.email):
+                self.client.force_login(usuario)
+                archivo = SimpleUploadedFile("captura.png", PNG_MINIMO, content_type="image/png")
+
+                respuesta = self.client.post(self.url, {"accion": "cargar_evidencia_judicial", "archivo": archivo})
+
+                self.assertEqual(respuesta.status_code, 404)
+        self.assertFalse(DocumentoAntecedentes.objects.exists())
+        self.assertFalse(self.eventos("DOCUMENTO_ANTECEDENTES_RECIBIDO").exists())
+
+    def test_el_revisor_ve_y_descarga_la_evidencia_auditada_el_operador_no(self):
+        self.subir(self.operador)
+        documento = DocumentoAntecedentes.objects.get()
+        descarga = reverse("antecedentes:descargar-documento", args=[documento.pk])
+
+        self.client.force_login(self.revisor2)
+        detalle = self.client.get(self.url)
+        respuesta = self.client.get(descarga)
+
+        self.assertContains(detalle, "Evidencia de la Función Judicial")
+        self.assertContains(detalle, descarga)
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertEqual(respuesta["Content-Type"], "image/png")
+        self.assertIn("captura-satje.png", respuesta["Content-Disposition"])
+        self.assertEqual(b"".join(respuesta.streaming_content), PNG_MINIMO)
+        respuesta.close()
+        self.assertEqual(self.eventos("DESCARGAR_DOCUMENTO_ANTECEDENTES").get().actor, self.revisor2)
+
+        self.client.force_login(self.operador)
+        self.assertEqual(self.client.get(descarga).status_code, 403)
+        self.assertNotContains(self.client.get(self.url), descarga)

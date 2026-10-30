@@ -27,8 +27,11 @@ htmlcov/
 .idea/
 # Configuración local del revisor Gentleman Guardian Angel:
 .gga
-# Ignoramos archivos del proyecto
-doc/
+# Ignoramos archivos del proyecto (requerimientos, certificados de ejemplo, cronogramas),
+# salvo la constitución y la guía de prueba manual, que se versionan con el código.
+doc/*
+!doc/constitution.md
+!doc/guia-prueba-manual.md
 # Ignoramos los roles iniciales 
 apps/identidad/fixtures/roles_iniciales.json
 # Node / Tailwind

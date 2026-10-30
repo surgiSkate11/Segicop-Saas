@@ -365,3 +365,107 @@ class CuentaCompartidaTests(TestCase):
         self.ajena.refresh_from_db()
         self.assertEqual(self.ajena.razon_social, "Andina Norte")
         self.assertEqual(Usuario.objects.get(nombre_usuario=RUC).nombre_completo, "Constructora Andina")
+
+
+def usuario_con_rol(organizacion, codigo, activo=True):
+    usuario = Usuario.objects.create_user(
+        email=f"{codigo}@cliente.com", nombre_completo=codigo, password="UnaClaveSegura123!"
+    )
+    rol, _ = Rol.objects.get_or_create(codigo=codigo, defaults={"nombre": codigo})
+    RolAsignado.objects.create(usuario=usuario, organizacion=organizacion, rol=rol, activo=activo)
+    return usuario
+
+
+class EmpresaPermisosTests(TestCase):
+    """S3: las vistas de empresas deniegan por defecto según la matriz de roles."""
+
+    def setUp(self):
+        self.organizacion = Organizacion.objects.create(nombre="Minera del Sur")
+        self.admin = preparar_staff(self.organizacion)
+        self.empresa = crear_empresa(
+            organizacion=self.organizacion, razon_social="Constructora Andina", ruc=RUC, actor=self.admin
+        )
+        self.datos = {"razon_social": "Nueva SA", "ruc": "1790099999001", "contacto_email": "nueva@empresa.com"}
+
+    def _conteos(self):
+        return (EmpresaContratista.objects.count(), Usuario.objects.count(), EventoAuditoria.objects.count())
+
+    def test_garita_no_ve_el_listado_ni_crea_ni_edita_ni_envia_credenciales(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "seguridad_garita"))
+        antes = self._conteos()
+
+        self.assertEqual(self.client.get(reverse("empresas:lista")).status_code, 403)
+        self.assertEqual(self.client.get(reverse("empresas:crear"), **HTMX).status_code, 403)
+        self.assertEqual(self.client.post(reverse("empresas:crear"), self.datos, **HTMX).status_code, 403)
+        editar = reverse("empresas:editar", args=[self.empresa.pk])
+        self.assertEqual(self.client.post(editar, self.datos, **HTMX).status_code, 403)
+        enviar = reverse("empresas:enviar_acceso", args=[self.empresa.pk])
+        with self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(self.client.post(enviar, **HTMX).status_code, 403)
+
+        self.assertEqual(self._conteos(), antes)
+        self.assertEqual(len(mail.outbox), 0)
+        self.empresa.refresh_from_db()
+        self.assertEqual(self.empresa.razon_social, "Constructora Andina")
+
+    def test_revisor_documental_ve_el_listado_pero_no_crea_ni_edita_ni_envia_credenciales(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "revisor_documental"))
+        antes = self._conteos()
+
+        self.assertEqual(self.client.get(reverse("empresas:lista")).status_code, 200)
+        self.assertEqual(self.client.post(reverse("empresas:crear"), self.datos, **HTMX).status_code, 403)
+        editar = reverse("empresas:editar", args=[self.empresa.pk])
+        self.assertEqual(self.client.post(editar, self.datos, **HTMX).status_code, 403)
+        enviar = reverse("empresas:enviar_acceso", args=[self.empresa.pk])
+        self.assertEqual(self.client.post(enviar, **HTMX).status_code, 403)
+
+        self.assertEqual(self._conteos(), antes)
+
+    def test_gestor_crea_edita_y_envia_credenciales(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "gestor_contratista"))
+
+        with self.captureOnCommitCallbacks(execute=True):
+            creada = self.client.post(reverse("empresas:crear"), self.datos, **HTMX)
+        self.assertEqual(creada.headers["HX-Redirect"], reverse("empresas:lista"))
+        self.assertTrue(EmpresaContratista.objects.filter(ruc=self.datos["ruc"], organizacion=self.organizacion).exists())
+
+        editar = reverse("empresas:editar", args=[self.empresa.pk])
+        editada = self.client.post(editar, {**self.datos, "ruc": RUC, "razon_social": "Andina SA"}, **HTMX)
+        self.assertEqual(editada.headers["HX-Redirect"], reverse("empresas:lista"))
+
+        enviar = reverse("empresas:enviar_acceso", args=[self.empresa.pk])
+        self.assertEqual(self.client.get(enviar, **HTMX).status_code, 200)
+
+    def test_rol_inactivo_no_otorga_nada(self):
+        self.client.force_login(usuario_con_rol(self.organizacion, "gestor_contratista", activo=False))
+        antes = self._conteos()
+
+        self.assertEqual(self.client.get(reverse("empresas:lista")).status_code, 403)
+        self.assertEqual(self.client.post(reverse("empresas:crear"), self.datos, **HTMX).status_code, 403)
+
+        self.assertEqual(self._conteos(), antes)
+
+    def test_objeto_de_una_organizacion_donde_falta_la_accion_es_404(self):
+        # Gestor en la organización A y solo garita en la B: no puede editar empresas de B.
+        otra = Organizacion.objects.create(nombre="Otra minera")
+        ajena = crear_empresa(organizacion=otra, razon_social="Ajena SA", ruc="1790088888001", actor=self.admin)
+        gestor = usuario_con_rol(self.organizacion, "gestor_contratista")
+        garita, _ = Rol.objects.get_or_create(codigo="seguridad_garita", defaults={"nombre": "Garita"})
+        RolAsignado.objects.create(usuario=gestor, organizacion=otra, rol=garita)
+        self.client.force_login(gestor)
+        antes = self._conteos()
+
+        respuesta = self.client.post(reverse("empresas:editar", args=[ajena.pk]), self.datos, **HTMX)
+
+        self.assertEqual(respuesta.status_code, 404)
+        self.assertEqual(self._conteos(), antes)
+
+    def test_admin_cliente_conserva_todo_el_acceso(self):
+        self.client.force_login(self.admin)
+
+        self.assertEqual(self.client.get(reverse("empresas:lista")).status_code, 200)
+        with self.captureOnCommitCallbacks(execute=True):
+            creada = self.client.post(reverse("empresas:crear"), self.datos, **HTMX)
+        self.assertEqual(creada.headers["HX-Redirect"], reverse("empresas:lista"))
+        enviar = reverse("empresas:enviar_acceso", args=[self.empresa.pk])
+        self.assertEqual(self.client.get(enviar, **HTMX).status_code, 200)

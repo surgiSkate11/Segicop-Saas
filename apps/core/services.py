@@ -6,6 +6,7 @@ from django.db import transaction
 from openpyxl import Workbook
 
 from apps.core.events import emitir_evento
+from apps.core.exportacion import escribir_filas_xlsx, valor_csv
 from apps.core.models import AlertaNotificacion, EstadoAlerta, ExportacionAuditoria
 
 
@@ -57,13 +58,16 @@ def exportar_alertas_csv(*, organizaciones_ids, actor, estado=None):
     for alerta in filas:
         escritor.writerow(
             [
-                alerta.organizacion.nombre,
-                alerta.tipo,
-                alerta.agrupador,
-                alerta.titulo,
-                alerta.severidad,
-                alerta.estado,
-                alerta.created_at.isoformat(),
+                valor_csv(valor)
+                for valor in (
+                    alerta.organizacion.nombre,
+                    alerta.tipo,
+                    alerta.agrupador,
+                    alerta.titulo,
+                    alerta.severidad,
+                    alerta.estado,
+                    alerta.created_at.isoformat(),
+                )
             ]
         )
 
@@ -96,8 +100,9 @@ def exportar_alertas_xlsx(*, organizaciones_ids, actor, estado=None):
     hoja = libro.active
     hoja.title = "Alertas"
     hoja.append(["Organización", "Tipo", "Grupo", "Título", "Severidad", "Estado", "Fecha"])
-    for alerta in filas:
-        hoja.append(
+    escribir_filas_xlsx(
+        hoja,
+        (
             [
                 alerta.organizacion.nombre,
                 alerta.tipo,
@@ -107,7 +112,9 @@ def exportar_alertas_xlsx(*, organizaciones_ids, actor, estado=None):
                 alerta.estado,
                 alerta.created_at.isoformat(),
             ]
-        )
+            for alerta in filas
+        ),
+    )
     hoja.freeze_panes = "A2"
     for columna in hoja.columns:
         hoja.column_dimensions[columna[0].column_letter].width = min(

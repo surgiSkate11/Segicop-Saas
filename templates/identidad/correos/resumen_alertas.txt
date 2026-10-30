@@ -1,0 +1,12 @@
+{% autoescape off %}Resumen de alertas de {{ organizacion.nombre }} · {{ hoy|date:"d/m/Y" }}
+
+Hoy se generaron {{ total }} alertas nuevas:
+{% for alerta in alertas %}
+- [{{ alerta.severidad }}] {{ alerta.titulo }}: {{ alerta.mensaje }}{% endfor %}
+{% if omitidas %}
+... y {{ omitidas }} alertas más.
+{% endif %}
+Revísalas en SIGECOP: {{ url_alertas }}
+
+Recibes este correo por tu rol en {{ organizacion.nombre }}. Es un resumen automático: no respondas a este mensaje.
+{% endautoescape %}

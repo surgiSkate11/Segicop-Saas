@@ -11,10 +11,13 @@
       <h1>Resumen general</h1>
       <p class="sc-subtitulo">Estado actual de {{ organizacion_actual.nombre|default:"tu organización" }}.</p>
     </div>
-    <a href="{% url 'core:alertas' %}" class="sc-boton-secundario">Ver alertas</a>
+    {% if 'ver_alertas' in acciones_permitidas %}
+    <a href="{% url 'identidad:alertas' %}" class="sc-boton-secundario">Ver alertas</a>
+    {% endif %}
   </div>
 
   <div class="sc-grilla-stats">
+    {% if 'ver_registros' in acciones_permitidas %}
     <div class="sc-tarjeta-stat sc-tarjeta-stat--marca">
       <div class="sc-tarjeta-stat__texto">
         <span class="sc-tarjeta-stat__titulo">Empresas registradas</span>
@@ -33,6 +36,8 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.5 2.7-6 6-6s6 2.5 6 6"/><circle cx="17" cy="9" r="2.6"/><path d="M15.2 13.2c2.6.4 4.3 2.3 4.8 4.8"/></svg>
       </div>
     </div>
+    {% endif %}
+    {% if 'ver_alertas' in acciones_permitidas %}
     <div class="sc-tarjeta-stat sc-tarjeta-stat--azul">
       <div class="sc-tarjeta-stat__texto">
         <span class="sc-tarjeta-stat__titulo">Alertas pendientes</span>
@@ -42,7 +47,14 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3h6l4 4v14H8z"/><path d="M14 3v4h4"/></svg>
       </div>
     </div>
+    {% endif %}
   </div>
+
+  {% if 'revisar_documentos' in acciones_permitidas %}
+    <div hx-get="{% url 'cumplimiento:por_hacer' %}" hx-trigger="load" hx-swap="innerHTML" aria-live="polite">
+      <p class="sc-texto-muted">Cargando documentos por aprobar…</p>
+    </div>
+  {% endif %}
 
   {% if alertas_pendientes %}
     <div class="sc-seccion-cabecera">
@@ -50,7 +62,7 @@
         <p class="sc-etiqueta-seccion">Atención requerida</p>
         <h2>Alertas pendientes</h2>
       </div>
-      <a href="{% url 'core:alertas' %}" class="sc-enlace-control">Ver todas</a>
+      <a href="{% url 'identidad:alertas' %}" class="sc-enlace-control">Ver todas</a>
     </div>
     <div class="sc-tabla-envoltorio">
       <table class="sc-tabla">

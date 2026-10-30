@@ -8,7 +8,7 @@ from rest_framework.views import APIView
 
 from apps.antecedentes import permisos
 from apps.antecedentes import services
-from apps.antecedentes.models import ConsultaProveedor, EstadoVerificacion, FinalidadConsulta
+from apps.antecedentes.models import ConsultaProveedor, EstadoVerificacion, FinalidadConsulta, ProveedorAntecedentes
 from apps.antecedentes.pdf import DocumentoInvalido
 from apps.antecedentes.serializers import CrearVerificacionEntrada, RevisionEntrada, serializador_verificacion
 from apps.antecedentes.services import (
@@ -116,7 +116,8 @@ def _espera_humana(verificacion):
     if estado == EstadoVerificacion.EN_CONSULTA:
         return None, INTERVENCION_HUMANA, None
     if estado == EstadoVerificacion.FALLIDA:
-        consulta = verificacion.consultas_proveedor.first()
+        # El fallo es siempre el del Ministerio: la evidencia judicial no tiene código de error de la fuente.
+        consulta = verificacion.consultas_proveedor.filter(proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR).first()
         codigo = (consulta and consulta.codigo_error) or services.ANT_SOURCE_UNAVAILABLE
         desde = services.reintentar_desde(verificacion)
         return codigo, "CARGA_MANUAL", desde.isoformat() if desde else None

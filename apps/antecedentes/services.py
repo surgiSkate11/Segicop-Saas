@@ -12,7 +12,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import OuterRef, Subquery
 from django.utils import timezone
 
-from apps.antecedentes import certificado, maquina_estados, pdf, permisos
+from apps.antecedentes import certificado, evidencia, maquina_estados, pdf, permisos
 from apps.antecedentes.conectores.asistido import ConectorAsistido
 from apps.antecedentes.conectores.base import ClaseRespuesta
 from apps.antecedentes.conectores.factory import obtener_conector
@@ -571,18 +571,21 @@ def _motivo_de_cuarentena(documento: DocumentoAntecedentes) -> str:
     return documento.detalle_validacion.removesuffix(_SUFIJO_CUARENTENA)
 
 
-def _guardar_documento(consulta, archivo, contenido: bytes, sha256: str, actor) -> DocumentoAntecedentes:
+def _guardar_documento(
+    consulta, archivo, contenido: bytes, sha256: str, actor, mime_type="application/pdf"
+) -> DocumentoAntecedentes:
     """Conserva los bytes originales en el almacenamiento privado, con un nombre propio (nunca el del usuario)."""
     documento = DocumentoAntecedentes(
         consulta=consulta,
         nombre_original=os.path.basename(str(archivo.name))[:255],
-        mime_type="application/pdf",
+        mime_type=mime_type,
         tamano_bytes=len(contenido),
         sha256=sha256,
         estado_validacion="PENDIENTE",
         subido_por=actor,
     )
-    documento.archivo.save(f"antecedente-{uuid.uuid4().hex}.pdf", ContentFile(contenido), save=False)
+    nombre = f"antecedente-{uuid.uuid4().hex}{evidencia.extension(mime_type)}"
+    documento.archivo.save(nombre, ContentFile(contenido), save=False)
     documento.save()
     return documento
 
@@ -651,6 +654,7 @@ def _analizar_certificado(*, verificacion, consulta, documento, texto: str, cont
             actor=actor,
             nota_bitacora="Pendiente de verificar la autenticidad del certificado.",
         )
+        _escalar_por_evidencia_judicial(verificacion, actor)
         return
 
     documento.estado_validacion = "REQUIERE_REVISION"
@@ -757,6 +761,116 @@ def cargar_certificado(*, verificacion, archivo, actor) -> tuple[DocumentoAntece
     return documento, True
 
 
+# --- Función Judicial asistida (T12, MVP 5.5): un hallazgo siempre pasa a revisión; un fallo nunca es favorable ---
+
+# La evidencia judicial se admite con la autorización registrada y mientras nadie haya decidido el caso.
+ESTADOS_EVIDENCIA_JUDICIAL = (*maquina_estados.ESTADOS_CARGA_MANUAL, *maquina_estados.ESTADOS_DECISION)
+_DETALLE_EVIDENCIA_JUDICIAL = (
+    "Evidencia de la búsqueda en e-SATJE. SIGECOP no interpreta su contenido: "
+    "un revisor de antecedentes debe leerla antes de decidir."
+)
+
+
+def evidencias_judiciales(verificacion):
+    return DocumentoAntecedentes.objects.filter(
+        consulta__verificacion=verificacion, consulta__proveedor=ProveedorAntecedentes.FUNCION_JUDICIAL
+    )
+
+
+def _escalar_por_evidencia_judicial(verificacion, actor) -> None:
+    """Con evidencia judicial aceptada, un caso listo para validar pasa a REQUIERE_REVISION (nunca se decide solo)."""
+    if verificacion.estado != EstadoVerificacion.AUTENTICIDAD_PENDIENTE:
+        return
+    if not evidencias_judiciales(verificacion).exclude(estado_validacion=CUARENTENA).exists():
+        return
+    maquina_estados.transicionar(
+        verificacion=verificacion,
+        nuevo_estado=EstadoVerificacion.REQUIERE_REVISION,
+        actor=actor,
+        nota_bitacora="Hay evidencia de la Función Judicial: un revisor debe leerla antes de decidir.",
+    )
+
+
+def _motivo_evidencia_invalida(contenido: bytes, mime_type: str) -> str | None:
+    if mime_type == "application/pdf":
+        return _leer_pdf(contenido)[0]
+    return evidencia.motivo_imagen_invalida(contenido, mime_type)
+
+
+def cargar_evidencia_judicial(*, verificacion, archivo, actor) -> tuple[DocumentoAntecedentes, bool]:
+    """
+    Captura o PDF de la búsqueda en e-SATJE. Devuelve (documento, creado).
+
+    SIGECOP no lee el resultado: toda evidencia aceptada deja el caso en manos de un revisor y nunca cambia
+    `resultado` (el del Ministerio). Un archivo inválido queda en cuarentena sin cambiar el caso ni completar la
+    consulta. El mismo archivo (mismo SHA-256) devuelve el documento existente sin duplicar nada.
+    """
+    error = pdf.validar_entrada(archivo, extensiones=tuple(evidencia.TIPOS_POR_EXTENSION))
+    if error:
+        raise DocumentoInvalido(error)
+    mime_type = evidencia.tipo_mime(archivo.name)
+    archivo.seek(0)
+    contenido = archivo.read()
+    archivo.seek(0)
+    sha256 = hashlib.sha256(contenido).hexdigest()
+    # Como con el certificado, el PDF se lee fuera de la transacción (ninguna fila queda bloqueada mientras tanto),
+    # y un duplicado o un estado que no admite evidencia no se lee.
+    pendiente = (
+        not evidencias_judiciales(verificacion).filter(sha256=sha256).exists()
+        and VerificacionAntecedentes.objects.filter(pk=verificacion.pk, estado__in=ESTADOS_EVIDENCIA_JUDICIAL).exists()
+    )
+    analisis = _motivo_evidencia_invalida(contenido, mime_type) if pendiente else None
+
+    with transaction.atomic():
+        bloqueada = VerificacionAntecedentes.objects.select_for_update().get(pk=verificacion.pk)
+        if bloqueada.estado not in ESTADOS_EVIDENCIA_JUDICIAL:
+            raise DomainError(
+                f"No se puede cargar evidencia judicial con la verificación en estado '{bloqueada.estado}'."
+            )
+        consulta, _ = ConsultaProveedor.objects.get_or_create(
+            verificacion=bloqueada, proveedor=ProveedorAntecedentes.FUNCION_JUDICIAL
+        )
+        existente = DocumentoAntecedentes.objects.filter(consulta=consulta, sha256=sha256).order_by("created_at").first()
+        if existente:
+            if existente.estado_validacion == CUARENTENA:
+                raise DocumentoInvalido(_motivo_de_cuarentena(existente), existente)
+            return existente, False
+
+        # Solo se lee aquí si el estado cambió durante la espera.
+        motivo = analisis if pendiente else _motivo_evidencia_invalida(contenido, mime_type)
+        documento = _guardar_documento(consulta, archivo, contenido, sha256, actor, mime_type=mime_type)
+        if motivo:
+            documento.estado_validacion = CUARENTENA
+            documento.codigo_error = ANT_DOCUMENT_INVALID
+            documento.detalle_validacion = motivo + _SUFIJO_CUARENTENA
+            documento.save()
+        else:
+            documento.estado_validacion = "REQUIERE_REVISION"
+            documento.detalle_validacion = _DETALLE_EVIDENCIA_JUDICIAL
+            documento.save()
+            cambiar_estado_consulta(consulta=consulta, nuevo_estado=EstadoConsulta.COMPLETADA)
+            _escalar_por_evidencia_judicial(bloqueada, actor)
+        emitir_evento(
+            actor=actor,
+            accion="DOCUMENTO_ANTECEDENTES_RECIBIDO",
+            recurso=documento,
+            organizacion=bloqueada.organizacion,
+            motivo="Evidencia de la Función Judicial recibida y conservada con su huella SHA-256.",
+            metadata={
+                "proveedor": ProveedorAntecedentes.FUNCION_JUDICIAL,
+                "sha256": sha256,
+                "tamano_bytes": len(contenido),
+                "mime_type": mime_type,
+                "estado_validacion": documento.estado_validacion,
+                "codigo_error": documento.codigo_error,
+            },
+        )
+    if motivo:
+        raise DocumentoInvalido(motivo, documento)
+    verificacion.refresh_from_db()
+    return documento, True
+
+
 def registrar_descarga(*, usuario, documento: DocumentoAntecedentes) -> None:
     """ANT-011: toda lectura del original queda en la auditoría."""
     emitir_evento(
@@ -798,17 +912,25 @@ def registrar_resultado_manual(*, verificacion, actor, resultado, numero_certifi
     return verificacion
 
 
+def certificados_del_ministerio(verificacion):
+    """Documentos de la consulta al Ministerio; la evidencia judicial nunca cuenta como certificado."""
+    return DocumentoAntecedentes.objects.filter(
+        consulta__verificacion=verificacion, consulta__proveedor=ProveedorAntecedentes.MINISTERIO_INTERIOR
+    )
+
+
 def _certificado_de_otra_identidad(verificacion) -> bool:
     """ANT-008: "Bloquear aceptación" cuando el último certificado cargado no es de la persona."""
-    ultimo = DocumentoAntecedentes.objects.filter(consulta__verificacion=verificacion).order_by("-created_at").first()
+    ultimo = certificados_del_ministerio(verificacion).order_by("-created_at").first()
     return bool(ultimo and ultimo.codigo_error == ANT_IDENTITY_MISMATCH)
 
 
 def vigencia_del_certificado(verificacion):
     """'Válido hasta' extraído del último certificado cargado que no está en cuarentena, o None."""
     return (
-        DocumentoAntecedentes.objects.filter(consulta__verificacion=verificacion, vigente_hasta_extraida__isnull=False)
-        .exclude(estado_validacion="CUARENTENA")
+        certificados_del_ministerio(verificacion)
+        .filter(vigente_hasta_extraida__isnull=False)
+        .exclude(estado_validacion=CUARENTENA)
         .order_by("-created_at")
         .values_list("vigente_hasta_extraida", flat=True)
         .first()
@@ -884,7 +1006,7 @@ def validar_verificacion(*, verificacion, revisor, decision: str, comentario="",
 
 def marcar_vencidas(actor=None) -> int:
     """Job en bloque para Celery-beat (Fase 9); por ahora, función normal."""
-    hoy = timezone.now().date()
+    hoy = timezone.localdate()
     total = 0
     for verificacion in VerificacionAntecedentes.objects.filter(
         estado=EstadoVerificacion.VALIDADA, vigente_hasta__lt=hoy
@@ -905,7 +1027,7 @@ def programar_renovaciones(actor=None) -> int:
     activa y cuya última verificación, validada o vencida, vence dentro del plazo configurado.
     Si la última verificación es otra (una renovación en curso o anulada) no se insiste.
     """
-    limite = timezone.now().date() + timedelta(days=_config("ANTECEDENTES_DIAS_RENOVACION", 15))
+    limite = timezone.localdate() + timedelta(days=_config("ANTECEDENTES_DIAS_RENOVACION", 15))
     ultima = VerificacionAntecedentes.objects.filter(persona=OuterRef("pk")).order_by("-created_at")
     candidatas = (
         Persona.objects.filter(asignaciones__activa=True)

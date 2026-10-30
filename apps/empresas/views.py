@@ -1,4 +1,3 @@
-from django.contrib.auth.mixins import LoginRequiredMixin
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse
 from django.views import View
@@ -9,21 +8,17 @@ from apps.core.modals import exito_htmx, render_modal
 from apps.empresas import services
 from apps.empresas.forms import EmpresaForm
 from apps.empresas.models import EmpresaContratista
-from apps.identidad.context_processors import organizacion_actual
-from apps.identidad.mixins import EnviarAccesoModalView
+from apps.identidad.mixins import EnviarAccesoModalView, RequierePermisoMixin
+from apps.identidad.permisos import organizacion_con_permiso
 
 
-def _organizaciones_del_usuario(usuario):
-    return usuario.roles_asignados.filter(activo=True).values_list("organizacion_id", flat=True)
-
-
-class EmpresaListView(LoginRequiredMixin, ListView):
+class EmpresaListView(RequierePermisoMixin, ListView):
     """
-    Filtra por las organizaciones donde el usuario tiene un rol activo.
-    El filtrado fino por alcance (instalación/contrato) llega en el
-    endurecimiento de permisos.
+    Filtra por las organizaciones donde el usuario puede ver registros.
+    El filtrado fino por alcance (instalación/contrato) llega con AlcanceAsignado.
     """
 
+    accion_requerida = "ver_registros"
     model = EmpresaContratista
     template_name = "empresas/lista.html"
     context_object_name = "empresas"
@@ -31,14 +26,16 @@ class EmpresaListView(LoginRequiredMixin, ListView):
 
     def get_queryset(self):
         return (
-            EmpresaContratista.objects.filter(organizacion_id__in=_organizaciones_del_usuario(self.request.user))
+            EmpresaContratista.objects.filter(organizacion_id__in=self.organizaciones_permitidas())
             .select_related("organizacion", "usuario")
             .order_by("razon_social")
         )
 
 
-class EmpresaModalView(LoginRequiredMixin, View):
+class EmpresaModalView(RequierePermisoMixin, View):
     """Crear (sin pk) o editar (con pk) una empresa, dentro de un modal HTMX."""
+
+    accion_requerida = "editar_registros"
 
     def dispatch(self, request, *args, **kwargs):
         # Abrir la URL directamente (sin HTMX) no tiene sentido: es un fragmento.
@@ -49,9 +46,7 @@ class EmpresaModalView(LoginRequiredMixin, View):
     def _empresa(self, request, pk):
         if pk is None:
             return None
-        return get_object_or_404(
-            EmpresaContratista, pk=pk, organizacion_id__in=_organizaciones_del_usuario(request.user)
-        )
+        return get_object_or_404(EmpresaContratista, pk=pk, organizacion_id__in=self.organizaciones_permitidas())
 
     def _modal(self, request, form, empresa):
         if empresa:
@@ -88,7 +83,7 @@ class EmpresaModalView(LoginRequiredMixin, View):
                     services.actualizar_empresa(empresa=empresa, actor=request.user, **form.cleaned_data)
                     mensaje = "Empresa actualizada."
                 else:
-                    organizacion = organizacion_actual(request).get("organizacion_actual")
+                    organizacion = organizacion_con_permiso(request.user, self.accion_actual)
                     if organizacion is None:
                         raise DomainError("Tu usuario no tiene una organización asignada.")
                     services.crear_empresa(organizacion=organizacion, actor=request.user, **form.cleaned_data)
@@ -105,6 +100,4 @@ class EnviarAccesoEmpresaView(EnviarAccesoModalView):
     url_accion = "empresas:enviar_acceso"
 
     def get_titular(self, request, pk):
-        return get_object_or_404(
-            EmpresaContratista, pk=pk, organizacion_id__in=_organizaciones_del_usuario(request.user)
-        )
+        return get_object_or_404(EmpresaContratista, pk=pk, organizacion_id__in=self.organizaciones_permitidas())

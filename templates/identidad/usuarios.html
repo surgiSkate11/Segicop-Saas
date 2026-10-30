@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+
+{% block titulo %}Usuarios internos · SIGECOP{% endblock %}
+{% block nav_usuarios %}activo{% endblock %}
+{% block migas %}Control y sistema <span class="sc-migas__sep">/</span> <strong>Usuarios</strong>{% endblock %}
+
+{% block contenido %}
+  <div class="sc-cabecera-lista">
+    <div>
+      <p class="sc-etiqueta-seccion">Usuarios</p>
+      <h1>Usuarios internos</h1>
+      <p class="sc-subtitulo !mb-0">Invita al personal de tu organización y asígnale un rol. Cada invitación llega por correo con un enlace de activación de un solo uso.</p>
+    </div>
+    <button type="button" class="sc-boton-primario"
+            hx-get="{% url 'identidad:invitar_usuario' %}" hx-target="#sc-modal" hx-swap="innerHTML">
+      <span aria-hidden="true">+</span> Invitar usuario
+    </button>
+  </div>
+
+  {% if roles %}
+    <div class="sc-tabla-meta"><span>{{ roles|length }} roles asignados</span><span class="sc-tabla-meta__hint">Activos primero</span></div>
+    <div class="sc-tabla-envoltorio">
+      <table class="sc-tabla">
+        <thead>
+          <tr>
+            <th>Nombre</th>
+            <th>Correo</th>
+            <th>Rol</th>
+            <th>Organización</th>
+            <th>Cuenta</th>
+            <th>Rol activo</th>
+            <th class="text-right">Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for asignacion in roles %}
+            <tr>
+              <td>{{ asignacion.usuario.nombre_completo }}</td>
+              <td><span class="sc-dato-mono">{{ asignacion.usuario.email }}</span></td>
+              <td>{{ asignacion.rol.nombre }}</td>
+              <td>{{ asignacion.organizacion.nombre }}</td>
+              <td>
+                {% if asignacion.usuario.cuenta_activada_at or asignacion.usuario.has_usable_password %}
+                  <span class="sc-estado sc-estado--habilitado">Activada</span>
+                {% else %}
+                  <span class="sc-estado sc-estado--en_revision">Pendiente de activación</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if asignacion.activo %}
+                  <span class="sc-estado sc-estado--habilitado">Sí</span>
+                {% else %}
+                  <span class="sc-estado sc-estado--suspendido">No</span>
+                {% endif %}
+              </td>
+              <td class="text-right">
+                {% if asignacion.activo %}
+                <div class="sc-tabla-acciones">
+                  <form method="post" action="{% url 'identidad:reenviar_acceso_interno' asignacion.pk %}" class="inline-flex">
+                    {% csrf_token %}
+                    <button type="submit" class="sc-boton-secundario sc-boton-compacto">Reenviar acceso</button>
+                  </form>
+                  <button type="button" class="sc-boton-secundario sc-boton-compacto"
+                          hx-get="{% url 'identidad:desactivar_rol' asignacion.pk %}" hx-target="#sc-modal" hx-swap="innerHTML">
+                    Desactivar
+                  </button>
+                </div>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="sc-vacio">
+      <p>No hay usuarios internos en tu organización.</p>
+      <p class="sc-vacio__ayuda">Usa "Invitar usuario" para dar acceso al primero.</p>
+    </div>
+  {% endif %}
+{% endblock %}

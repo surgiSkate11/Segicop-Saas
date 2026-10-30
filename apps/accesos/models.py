@@ -44,7 +44,7 @@ class PermisoIngreso(OrganizacionScopedModel):
     def vigente_hoy(self) -> bool:
         from django.utils import timezone
 
-        hoy = timezone.now().date()
+        hoy = timezone.localdate()
         return self.fecha_inicio_vigencia <= hoy <= self.fecha_fin_vigencia
 
 

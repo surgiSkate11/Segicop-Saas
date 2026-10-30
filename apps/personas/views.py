@@ -1,4 +1,3 @@
-from django.contrib.auth.mixins import LoginRequiredMixin
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse
 from django.views import View
@@ -6,18 +5,15 @@ from django.views.generic import ListView
 
 from apps.core.exceptions import DomainError
 from apps.core.modals import exito_htmx, render_modal
-from apps.identidad.context_processors import organizacion_actual
-from apps.identidad.mixins import EnviarAccesoModalView
+from apps.identidad.mixins import EnviarAccesoModalView, RequierePermisoMixin
+from apps.identidad.permisos import organizacion_con_permiso
 from apps.personas import services
 from apps.personas.forms import AsignarPersonaForm, PersonaForm
 from apps.personas.models import Persona
 
 
-def _organizaciones_del_usuario(usuario):
-    return usuario.roles_asignados.filter(activo=True).values_list("organizacion_id", flat=True)
-
-
-class PersonaListView(LoginRequiredMixin, ListView):
+class PersonaListView(RequierePermisoMixin, ListView):
+    accion_requerida = "ver_registros"
     model = Persona
     template_name = "personas/lista.html"
     context_object_name = "personas"
@@ -25,15 +21,17 @@ class PersonaListView(LoginRequiredMixin, ListView):
 
     def get_queryset(self):
         return (
-            Persona.objects.filter(organizacion_id__in=_organizaciones_del_usuario(self.request.user))
+            Persona.objects.filter(organizacion_id__in=self.organizaciones_permitidas())
             .select_related("usuario")
             .prefetch_related("asignaciones__empresa")
             .order_by("apellidos", "nombres")
         )
 
 
-class _ModalView(LoginRequiredMixin, View):
+class _ModalView(RequierePermisoMixin, View):
     """Base común: los modales son fragmentos HTMX, no páginas completas."""
+
+    accion_requerida = "editar_registros"
 
     def dispatch(self, request, *args, **kwargs):
         if not request.htmx:
@@ -43,7 +41,7 @@ class _ModalView(LoginRequiredMixin, View):
     def _persona(self, request, pk):
         if pk is None:
             return None
-        return get_object_or_404(Persona, pk=pk, organizacion_id__in=_organizaciones_del_usuario(request.user))
+        return get_object_or_404(Persona, pk=pk, organizacion_id__in=self.organizaciones_permitidas())
 
 
 class PersonaModalView(_ModalView):
@@ -74,6 +72,9 @@ class PersonaModalView(_ModalView):
                 "fecha_nacimiento": persona.fecha_nacimiento,
                 "contacto_telefono": persona.contacto_telefono,
                 "contacto_email": persona.contacto_email,
+                "nacionalidad": persona.nacionalidad,
+                "domicilio": persona.domicilio,
+                "telefono_emergencia": persona.telefono_emergencia,
             }
         return self._modal(request, PersonaForm(initial=initial, creando=persona is None), persona)
 
@@ -86,7 +87,7 @@ class PersonaModalView(_ModalView):
                     services.actualizar_persona(persona=persona, actor=request.user, **form.cleaned_data)
                     mensaje = "Persona actualizada."
                 else:
-                    organizacion = organizacion_actual(request).get("organizacion_actual")
+                    organizacion = organizacion_con_permiso(request.user, self.accion_actual)
                     if organizacion is None:
                         raise DomainError("Tu usuario no tiene una organización asignada.")
                     services.registrar_persona(organizacion=organizacion, actor=request.user, **form.cleaned_data)
@@ -139,4 +140,4 @@ class EnviarAccesoPersonaView(EnviarAccesoModalView):
     url_accion = "personas:enviar_acceso"
 
     def get_titular(self, request, pk):
-        return get_object_or_404(Persona, pk=pk, organizacion_id__in=_organizaciones_del_usuario(request.user))
+        return get_object_or_404(Persona, pk=pk, organizacion_id__in=self.organizaciones_permitidas())

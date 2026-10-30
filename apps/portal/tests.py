@@ -292,7 +292,7 @@ class AccesoPortalMiddlewareTests(PortalBase):
             reverse("personas:lista"),
             reverse("cumplimiento:bandeja"),
             reverse("accesos:lista"),
-            reverse("core:alertas"),
+            reverse("identidad:alertas"),
             "/admin/",
             "/api/v1/schema/",
             "/ruta/que/no/existe/",

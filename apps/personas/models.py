@@ -30,6 +30,10 @@ class Persona(CuentaAccesoMixin, OrganizacionScopedModel):
     fecha_nacimiento = models.DateField(null=True, blank=True)
     contacto_telefono = models.CharField(max_length=30, blank=True)
     contacto_email = models.EmailField(blank=True)
+    # T13 / S11: fields of the previous system. The position lives per company in Asignacion.cargo_o_actividad.
+    nacionalidad = models.CharField(max_length=60, blank=True, db_default="")
+    domicilio = models.CharField(max_length=255, blank=True, db_default="")
+    telefono_emergencia = models.CharField("teléfono de emergencia", max_length=30, blank=True, db_default="")
     estado = models.CharField(max_length=30, choices=EstadoCumplimiento.choices, default=EstadoCumplimiento.BORRADOR)
 
     class Meta:
